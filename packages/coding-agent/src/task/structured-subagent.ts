@@ -121,6 +121,8 @@ export interface StructuredSubagentRequest {
 	providerPromptCacheKey?: string;
 	/** Releases caller-owned resources when this child lifecycle terminates. */
 	onRelease?: () => Promise<void>;
+	/** Called after a retained child rotates off its launch cache lane. */
+	onPromptCacheLaneReleased?: () => Promise<void>;
 	isolation?: StructuredSubagentIsolationControls;
 	/** The parent agent name forbidden from recursively spawning itself. */
 	blockedAgent?: string;
@@ -525,6 +527,7 @@ function buildExecutorOptions(
 		restrictToolNames,
 		keepAlive: request.keepAlive,
 		onRelease: request.onRelease,
+		onPromptCacheLaneReleased: request.onPromptCacheLaneReleased,
 		signal: request.signal,
 		eventBus: session.eventBus,
 		subagentEventBus: session.subagentEventBus,

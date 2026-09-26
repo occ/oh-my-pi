@@ -433,6 +433,8 @@ export interface ExecutorOptions {
 	credentialSourceSessionId?: string;
 	/** Stable task cache lane, distinct from the child's provider session id. */
 	providerPromptCacheKey?: string;
+	/** Called after a retained child rotates off its launch cache lane. */
+	onPromptCacheLaneReleased?: () => Promise<void>;
 	worktree?: string;
 	agent: AgentDefinition;
 	task: string;
@@ -3854,6 +3856,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				getApiKey: options.getApiKey,
 				credentialSourceSessionId: options.credentialSourceSessionId,
 				providerPromptCacheKey: options.providerPromptCacheKey,
+				providerPromptCacheKeySource: "explicit",
 				settings: subagentSettings,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
@@ -4034,9 +4037,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 								AgentRegistry.global().get(MAIN_AGENT_ID)?.sessionFile,
 						);
 					}
-					const { session: revived } = await createAgentSession(
-						buildSubagentSessionOptions(reopened, expectedAgentRef, true),
-					);
+					const reviveOptions = buildSubagentSessionOptions(reopened, expectedAgentRef, true);
+					reviveOptions.providerPromptCacheKey = reopened.getSessionId();
+					const { session: revived } = await createAgentSession(reviveOptions);
 					// Re-run the executor's extension wiring on the rebuilt session.
 					// Skipping it leaves the runner pre-init, so a `tool_call` handler
 					// touching a runtime action trips the fail-closed gate and blocks
@@ -4315,6 +4318,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						deferCleanup(completion);
 					},
 				});
+				if (AgentLifecycleManager.global().has(id, session)) {
+					session.agent.promptCacheKey = session.agent.sessionId;
+					await options.onPromptCacheLaneReleased?.();
+				}
 			}
 			if (jobManager) {
 				if (deferredSessionShutdown) {

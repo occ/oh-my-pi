@@ -69,7 +69,12 @@ interface SessionHarness {
  * `subscribeRunState` never fires — the run-state mirror omits `idle`, which is
  * exactly the leak the acceptance boundary must cover.
  */
-function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: AsyncJobManager }): SessionHarness {
+function createHarness(options?: {
+	hangPrompt?: boolean;
+	asyncJobManager?: AsyncJobManager;
+	providerSessionId?: string;
+	providerPromptCacheKey?: string;
+}): SessionHarness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
 	const promptEntered = Promise.withResolvers<void>();
@@ -94,7 +99,11 @@ function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: Async
 	};
 	const session = {
 		state: { messages },
-		agent: { state: { systemPrompt: ["test"] } },
+		agent: {
+			state: { systemPrompt: ["test"] },
+			sessionId: options?.providerSessionId ?? "child-session",
+			promptCacheKey: options?.providerPromptCacheKey ?? options?.providerSessionId ?? "child-session",
+		},
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
@@ -202,6 +211,38 @@ describe("runSubprocess result acceptance", () => {
 		expect(AgentRegistry.global().staleAcceptedRuns()).toEqual([]);
 		// Launch milestone is the registration timestamp the acceptance must not move.
 		expect(settled?.createdAt).toBe(ref.createdAt);
+	});
+
+	it("rotates a retained child's cache identity before releasing its launch lane", async () => {
+		const harness = createHarness({
+			providerSessionId: "child-provider-session",
+			providerPromptCacheKey: "parent-cache:task:0",
+		});
+		registerRunning(harness.session);
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: harness.session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} as CreateAgentSessionResult);
+		let laneReleases = 0;
+
+		await runSubprocess({
+			cwd: "/tmp",
+			agent: baseAgent,
+			task: "do the work",
+			index: 0,
+			id: AGENT_ID,
+			providerPromptCacheKey: "parent-cache:task:0",
+			onPromptCacheLaneReleased: async () => {
+				laneReleases += 1;
+			},
+		});
+
+		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
+		expect(laneReleases).toBe(1);
+		await runSubagentFollowUpTurn({ id: AGENT_ID, agent: baseAgent, message: "continue" });
+		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
 	});
 
 	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {

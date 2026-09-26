@@ -120,48 +120,39 @@ describe("task prompt-cache lanes", () => {
 		await secondWave;
 	});
 
-	it("keeps a resumable child's lane until lifecycle release", async () => {
+	it("releases a retained child's lane only after cache identity rotation", async () => {
 		const keys: Array<string | undefined> = [];
-		let retainedId: string | undefined;
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			keys.push(options.providerPromptCacheKey);
-			if (keys.length === 1) {
-				retainedId = options.id;
-				const session = { dispose: async () => {} } as unknown as AgentSession;
-				const ref = AgentRegistry.global().register({
-					id: options.id,
-					displayName: options.id,
-					kind: "sub",
-					status: "running",
-					session,
-				});
-				await executorModule.finalizeSubagentLifecycle({
-					id: options.id,
-					session,
-					aborted: false,
-					keepAlive: true,
-					isolated: false,
-					agentIdleTtlMs: 0,
-					reviveSession: null,
-					onRelease: options.onRelease,
-				});
-				expect(AgentRegistry.global().get(options.id)).toBe(ref);
-			}
-			return makeResult(options.id ?? "?");
+			const session = { dispose: async () => {} } as unknown as AgentSession;
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				status: "running",
+				session,
+			});
+			await executorModule.finalizeSubagentLifecycle({
+				id: options.id,
+				session,
+				aborted: false,
+				keepAlive: true,
+				isolated: false,
+				agentIdleTtlMs: 0,
+				reviveSession: null,
+				onRelease: options.onRelease,
+			});
+			await options.onPromptCacheLaneReleased?.();
+			return makeResult(options.id);
 		});
 		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
 
 		await tool.execute("retained", { agent: "task", name: "Retained", task: "Retain." } as TaskParams);
-		await tool.execute("while-retained", { agent: "task", name: "Sibling", task: "Run." } as TaskParams);
-		expect(keys).toEqual([`${parentCacheKey}:task:0`, `${parentCacheKey}:task:1`]);
-
-		if (!retainedId) throw new Error("Expected retained child id");
-		expect(await AgentLifecycleManager.global().release(retainedId)).toBe(true);
-		await tool.execute("after-release", { agent: "task", name: "Later", task: "Run later." } as TaskParams);
-		expect(keys[2]).toBe(`${parentCacheKey}:task:0`);
+		await tool.execute("after-handoff", { agent: "task", name: "Sibling", task: "Run." } as TaskParams);
+		expect(keys).toEqual([`${parentCacheKey}:task:0`, `${parentCacheKey}:task:0`]);
 	});
 
-	it("keeps an adopted child's lane when downstream processing rejects", async () => {
+	it("keeps an adopted child's lane when downstream processing rejects before handoff", async () => {
 		const keys: Array<string | undefined> = [];
 		let retainedId: string | undefined;
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {

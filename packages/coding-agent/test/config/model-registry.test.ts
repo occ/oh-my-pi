@@ -171,4 +171,32 @@ describe("ModelRegistry", () => {
 
 		expect(await registry.getApiKeyAndHeaders(model)).toEqual({ ok: false, error: "auth failed" });
 	});
+
+	test("applies a per-model prompt-cache key override from models.yml", async () => {
+		const modelsPath = path.join(tmpDir, "fd-models.yml");
+		fs.writeFileSync(
+			modelsPath,
+			[
+				"providers:",
+				"  litellm:",
+				"    apiKey: test-key",
+				"    baseUrl: https://litellm.example.invalid/v1",
+				"    api: openai-completions",
+				"    models:",
+				"      - id: fd-coder",
+				"    modelOverrides:",
+				"      fd-coder:",
+				"        compat:",
+				"          supportsPromptCacheKey: true",
+			].join("\n"),
+		);
+		const configured = new ModelRegistry(authStorage, modelsPath);
+
+		const model = configured
+			.getAvailable()
+			.find(candidate => candidate.provider === "litellm" && candidate.id === "fd-coder");
+		if (!model) throw new Error("Expected configured litellm/fd-coder model");
+		if (model.api !== "openai-completions") throw new Error(`Expected openai-completions, got ${model.api}`);
+		expect(model.compat).toMatchObject({ supportsPromptCacheKey: true });
+	});
 });
