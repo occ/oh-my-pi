@@ -431,6 +431,8 @@ export interface ExecutorOptions {
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
 	/** Parent session whose stored credential affinities seed the child session. */
 	credentialSourceSessionId?: string;
+	/** Stable task cache lane, distinct from the child's provider session id. */
+	providerPromptCacheKey?: string;
 	worktree?: string;
 	agent: AgentDefinition;
 	task: string;
@@ -3851,6 +3853,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				credentialSourceSessionId: options.credentialSourceSessionId,
+				providerPromptCacheKey: options.providerPromptCacheKey,
 				settings: subagentSettings,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,

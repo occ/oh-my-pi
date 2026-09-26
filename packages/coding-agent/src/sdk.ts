@@ -2027,6 +2027,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// sessions inherit stored affinity into the child's own provider session.
 			getApiKey: options.getApiKey,
 			getCredentialSourceSessionId: options.getApiKey ? undefined : () => agent.sessionId,
+			getProviderPromptCacheKey: () => agent.promptCacheKey ?? agent.sessionId,
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},

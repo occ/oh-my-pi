@@ -231,6 +231,8 @@ export interface ToolSession {
 	getApiKey?: AgentOptions["getApiKey"];
 	/** Current session whose stored credential affinities should seed a child session. */
 	getCredentialSourceSessionId?: () => string | undefined;
+	/** Stable provider prompt-cache identity used to warm task-agent lanes. */
+	getProviderPromptCacheKey?: () => string | undefined;
 	/** Skip subprocess-kernel availability checks and warmup */
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */

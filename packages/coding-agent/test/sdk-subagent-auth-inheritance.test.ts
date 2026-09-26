@@ -86,6 +86,7 @@ describe("task subagent OAuth pin inheritance", () => {
 			await authStorage.credentials.set("anthropic", [oauthCredential("a"), oauthCredential("b")]);
 			authStorage.keys.setRuntime("openai", "openai-key");
 			const parentProviderSessionId = "parent-provider-session";
+			const parentPromptCacheKey = "parent-prompt-cache";
 			const accountB = authStorage.oauth
 				.accounts("anthropic", parentProviderSessionId)
 				.find(account => account.accountId === "account-b");
@@ -116,6 +117,7 @@ describe("task subagent OAuth pin inheritance", () => {
 				settings,
 				model,
 				providerSessionId: parentProviderSessionId,
+				providerPromptCacheKey: parentPromptCacheKey,
 				toolNames: ["task"],
 				disableExtensionDiscovery: true,
 			});
@@ -135,13 +137,16 @@ describe("task subagent OAuth pin inheritance", () => {
 				expect(childOptions.getApiKey).toBeUndefined();
 				expect(childOptions.credentialSourceSessionId).toBe(parentProviderSessionId);
 			}
+			expect(dispatched.map(options => options.providerPromptCacheKey).sort()).toEqual([
+				`${parentPromptCacheKey}:task:0`,
+				`${parentPromptCacheKey}:task:1`,
+			]);
 
 			// The spawn captured the old affinity. A later parent `/fresh` cannot
 			// change which sticky credential is copied into either child.
 			parent.agent.sessionId = "rotated-parent-session";
 			const children: AgentSession[] = [];
-			for (const [index, childOptions] of dispatched.entries()) {
-				const providerSessionId = `child-provider-session-${index + 1}`;
+			for (const childOptions of dispatched) {
 				const { session: child } = await createAgentSession({
 					cwd: tempDir.path(),
 					agentDir: tempDir.path(),
@@ -150,9 +155,9 @@ describe("task subagent OAuth pin inheritance", () => {
 					modelRegistry,
 					settings,
 					model,
-					providerSessionId,
 					getApiKey: childOptions.getApiKey,
 					credentialSourceSessionId: childOptions.credentialSourceSessionId,
+					providerPromptCacheKey: childOptions.providerPromptCacheKey,
 					toolNames: ["task"],
 					disableExtensionDiscovery: true,
 				});
@@ -161,11 +166,15 @@ describe("task subagent OAuth pin inheritance", () => {
 				const childGetApiKey = child.agent.getApiKey;
 				if (!childGetApiKey) throw new Error("Expected child credential resolver");
 				expect(await resolveApiKeyOnce(await childGetApiKey(model))).toBe("access-b");
+				const providerSessionId = child.agent.sessionId;
 				expect(metadataUserId(child.agent.metadataForProvider("anthropic"))).toMatchObject({
 					session_id: providerSessionId,
 					account_uuid: "account-b",
 				});
+				expect(child.agent.promptCacheKey).toBe(childOptions.providerPromptCacheKey);
+				expect(providerSessionId).not.toBe(child.agent.promptCacheKey);
 			}
+			expect(new Set(children.map(childSession => childSession.agent.sessionId)).size).toBe(children.length);
 			const child = children[0];
 			if (!child) throw new Error("Expected first child session");
 			const childGetApiKey = child.agent.getApiKey;
@@ -183,7 +192,17 @@ describe("task subagent OAuth pin inheritance", () => {
 			const nestedOptions = dispatched[2];
 			if (!nestedOptions) throw new Error("Expected nested child options");
 			expect(nestedOptions.getApiKey).toBeUndefined();
-			expect(nestedOptions.credentialSourceSessionId).toBe("child-provider-session-1");
+			expect(nestedOptions.credentialSourceSessionId).toBe(child.agent.sessionId);
+			expect(nestedOptions.providerPromptCacheKey).toBe(`${child.agent.promptCacheKey}:task:0`);
+			await parentTask.execute("later-task-call", {
+				context: "Check one later target.",
+				tasks: [{ agent: "task", name: "ChildC", task: "Inspect target C." }],
+			});
+			const laterOptions = dispatched[3];
+			const laterKey = laterOptions?.providerPromptCacheKey;
+			if (laterKey === undefined) throw new Error("Expected later child cache lane");
+			// Both earlier lanes were released, so the later child reuses one instead of opening lane 2.
+			expect([`${parentPromptCacheKey}:task:0`, `${parentPromptCacheKey}:task:1`]).toContain(laterKey);
 			const { session: grandchild } = await createAgentSession({
 				cwd: tempDir.path(),
 				agentDir: tempDir.path(),
@@ -192,9 +211,9 @@ describe("task subagent OAuth pin inheritance", () => {
 				modelRegistry,
 				settings,
 				model,
-				providerSessionId: "grandchild-provider-session",
 				getApiKey: nestedOptions.getApiKey,
 				credentialSourceSessionId: nestedOptions.credentialSourceSessionId,
+				providerPromptCacheKey: nestedOptions.providerPromptCacheKey,
 				toolNames: ["task"],
 				disableExtensionDiscovery: true,
 			});
@@ -202,10 +221,13 @@ describe("task subagent OAuth pin inheritance", () => {
 			const grandchildGetApiKey = grandchild.agent.getApiKey;
 			if (!grandchildGetApiKey) throw new Error("Expected grandchild credential resolver");
 			expect(await resolveApiKeyOnce(await grandchildGetApiKey(model))).toBe("access-b");
+			const grandchildProviderSessionId = grandchild.agent.sessionId;
 			expect(metadataUserId(grandchild.agent.metadataForProvider("anthropic"))).toMatchObject({
-				session_id: "grandchild-provider-session",
+				session_id: grandchildProviderSessionId,
 				account_uuid: "account-b",
 			});
+			expect(grandchild.agent.promptCacheKey).toBe(nestedOptions.providerPromptCacheKey);
+			expect(grandchildProviderSessionId).not.toBe(grandchild.agent.promptCacheKey);
 		} finally {
 			for (const session of sessions.reverse()) await session.dispose();
 			authStorage.close();
