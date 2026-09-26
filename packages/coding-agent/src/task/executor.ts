@@ -4319,7 +4319,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					},
 				});
 				if (AgentLifecycleManager.global().has(id, session)) {
-					session.agent.promptCacheKey = session.agent.sessionId;
+					session.rotateProviderPromptCacheKey(session.agent.sessionId ?? session.sessionId);
 					await options.onPromptCacheLaneReleased?.();
 				}
 			}

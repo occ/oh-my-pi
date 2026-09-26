@@ -104,6 +104,9 @@ function createHarness(options?: {
 			sessionId: options?.providerSessionId ?? "child-session",
 			promptCacheKey: options?.providerPromptCacheKey ?? options?.providerSessionId ?? "child-session",
 		},
+		rotateProviderPromptCacheKey: (promptCacheKey: string) => {
+			session.agent.promptCacheKey = promptCacheKey;
+		},
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },

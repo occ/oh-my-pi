@@ -4860,6 +4860,12 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/** Rebind this session and its advisors after a prompt-cache identity handoff. */
+	rotateProviderPromptCacheKey(promptCacheKey: string): void {
+		this.agent.promptCacheKey = promptCacheKey;
+		this.#advisors.refreshProviderIdentity();
+	}
+
 	/**
 	 * Set agent.sessionId from the session manager and install a dynamic
 	 * metadata resolver so every Anthropic API request carries
