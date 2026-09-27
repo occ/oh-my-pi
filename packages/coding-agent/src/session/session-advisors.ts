@@ -578,6 +578,7 @@ export class SessionAdvisors {
 	#advisorCostSnapshotBarrier: Promise<void> | undefined;
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
+	#preserveHeadlessAdvisorAdvice = false;
 	#preserveTerminalYieldAdvice = false;
 	/** Routes late advice against a finished run through the boundary-flush continuation policy during unwind. */
 	#terminalUnwindActive = false;
@@ -2663,6 +2664,7 @@ export class SessionAdvisors {
 	prepareForHeadlessAdvisorDrain(): void {
 		this.#preserveAdvisorAdvice = true;
 		for (const advisor of this.#advisors) advisor.runtime.flushHeld();
+		this.#preserveHeadlessAdvisorAdvice = true;
 	}
 
 	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
@@ -2671,12 +2673,15 @@ export class SessionAdvisors {
 		this.#preserveTerminalYieldAdvice = true;
 	}
 
-	/** Clear terminal-unwind delivery when a new primary run starts. */
+	/** Restore headless-drain routing only when a genuinely new primary run starts. */
 	onPrimaryAgentStart(): void {
 		this.#terminalUnwindActive = false;
+		if (!this.#preserveHeadlessAdvisorAdvice) return;
+		this.#preserveHeadlessAdvisorAdvice = false;
+		this.#preserveAdvisorAdvice = false;
 	}
 
-	/** Restore normal advisor routing when the primary starts or continues work. */
+	/** Restore terminal-yield routing at the next primary turn boundary. */
 	onPrimaryTurnStart(): void {
 		this.#terminalUnwindActive = false;
 		if (!this.#preserveTerminalYieldAdvice) return;
