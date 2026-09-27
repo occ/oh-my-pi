@@ -1377,6 +1377,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Whether the open dialogs ended a prompt's computer turn, which goes on once they settle. */
 	#userWaitEndedTurn = false;
 	#inFlightEpoch = 0;
+	#promptInFlightSettled: PromiseWithResolvers<void> | undefined;
 	#abortInProgress = false;
 	/** Forced sends still unwinding, including while their pending agent_end is flushed. */
 	#forcedQueuedMessageDeliveryCount = 0;
@@ -1521,6 +1522,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	#beginInFlight(): number {
 		this.#promptInFlightCount++;
+		this.#promptInFlightSettled ??= Promise.withResolvers<void>();
 		if (this.#promptInFlightCount === 1) {
 			this.#acquirePowerAssertion();
 			this.#beginComputerTurn();
@@ -1535,6 +1537,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// finishing has its bracket reset by it and ends here.
 		if (epoch === this.#inFlightEpoch) this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		if (this.#promptInFlightCount !== 0) return;
+		this.#promptInFlightSettled?.resolve();
+		this.#promptInFlightSettled = undefined;
 		this.yieldQueue.requestIdleFlush();
 		this.#releasePowerAssertion();
 		this.#endComputerTurn();
@@ -2043,6 +2047,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#inFlightEpoch++;
 		this.#promptInFlightCount = 0;
 		this.#clientPromptInFlightCount = 0;
+		this.#promptInFlightSettled?.resolve();
+		this.#promptInFlightSettled = undefined;
 		this.yieldQueue.requestIdleFlush();
 		this.#releasePowerAssertion();
 		this.#endComputerTurn();
@@ -6493,6 +6499,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	/** Rebind this session and its advisors after a prompt-cache identity handoff. */
+	rotateProviderPromptCacheKey(promptCacheKey: string): void {
+		this.agent.promptCacheKey = promptCacheKey;
+		this.#advisors.refreshProviderIdentity();
+	}
+
 	/**
 	 * Set agent.sessionId from the session manager and install a dynamic
 	 * metadata resolver so every Anthropic API request carries
@@ -7304,6 +7316,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// The agent loop stops before abort() finishes unwinding; only its last
 			// step schedules the turn that delivers a queued steer (interrupt-and-send).
 			await Promise.all(this.#abortUnwinds);
+			await this.#promptInFlightSettled?.promise;
 			await this.#advisors.waitForPendingCardEvents();
 			// Core subscribers run asynchronously. Retry recovery can still be
 			// rewriting entries before it publishes auto_retry_end.
@@ -7311,7 +7324,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			await this.#waitForPostPromptRecovery();
 			// An abort can finish (and schedule its drain) after the waits above returned.
 			if (
-				!this.agent.state.isStreaming &&
+				!this.isStreaming &&
 				this.#inFlightEventHandlers.size === 0 &&
 				this.#abortUnwinds.size === 0 &&
 				this.#postPromptTasks.size === 0
