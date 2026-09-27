@@ -394,6 +394,10 @@ export interface ExecutorOptions {
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
 	/** Parent session whose stored credential affinities seed the child session. */
 	credentialSourceSessionId?: string;
+	/** Stable task cache lane, distinct from the child's provider session id. */
+	providerPromptCacheKey?: string;
+	/** Called after a retained child rotates off its launch cache lane. */
+	onPromptCacheLaneReleased?: () => Promise<void>;
 	worktree?: string;
 	agent: AgentDefinition;
 	task: string;
@@ -3835,6 +3839,8 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				oauthAccountPools: Object.hasOwn(agentAccountPools, capture.agentName)
 					? agentAccountPools[capture.agentName]
 					: undefined,
+				// Revived children rotate off the launch lane, which may now serve a sibling.
+				providerPromptCacheKey: reopened.getSessionId(),
 			}));
 		} catch (error) {
 			mcpFollower?.dispose();
@@ -4310,6 +4316,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					credentialSourceSessionId: options.credentialSourceSessionId,
 					oauthAccountPools: options.oauthAccountPools,
 					inheritedSessionAgents: options.inheritedSessionAgents,
+					providerPromptCacheKey: options.providerPromptCacheKey,
+					providerPromptCacheKeySource: "explicit",
 					model,
 					modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 					modelPatternAuthFallback:
@@ -4683,6 +4691,41 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						deferCleanup(completion);
 					},
 				});
+				if (AgentLifecycleManager.global().has(id, session)) {
+					const quiescence = (async (): Promise<void> => {
+						session.prepareForHeadlessAdvisorDrain();
+						const awaitIdle = async (): Promise<boolean> => {
+							try {
+								await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
+									session.waitForIdle(),
+								);
+								return true;
+							} catch {
+								return false;
+							}
+						};
+						const firstAdvisorSettled = await session.waitForAdvisorCatchup(
+							Math.max(0, cleanupDeadlineAt - Date.now()),
+						);
+						const firstIdle = firstAdvisorSettled && (await awaitIdle());
+						const secondAdvisorSettled =
+							firstIdle && (await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now())));
+						const fullySettled = secondAdvisorSettled && (await awaitIdle());
+						const promptCacheKey = session.agent.sessionId ?? session.sessionId;
+						if (typeof session.rotateProviderPromptCacheKey === "function") {
+							session.rotateProviderPromptCacheKey(promptCacheKey);
+						} else {
+							session.agent.promptCacheKey = promptCacheKey;
+						}
+						if (fullySettled) await options.onPromptCacheLaneReleased?.();
+					})();
+					void quiescence.catch(error => {
+						logger.warn("Subagent cache-lane quiescence failed", {
+							id,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					});
+				}
 			}
 			if (jobManager) {
 				if (deferredSessionShutdown) {
