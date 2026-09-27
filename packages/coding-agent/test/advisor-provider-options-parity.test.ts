@@ -24,7 +24,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+import { createInMemoryAuthStorage, fixedAdvisorTools } from "./helpers/agent-session-setup";
 import { endpoint as responsesEndpoint } from "../../ai/test/fixtures/openai-responses-server";
 
 import {
@@ -310,6 +310,41 @@ describe("AgentSession advisor provider-options parity", () => {
 		// the parent.
 		expect(advisor.sessionId).toMatch(UUID_V7_PATTERN);
 		expect(advisor.sessionId).not.toBe(advisor.promptCacheKey);
+	});
+
+	it("refreshes a retained child advisor when its launch cache lane is released", async () => {
+		const capturedStreamOptions: Array<SimpleStreamOptions | undefined> = [];
+		const captureStreamFn: StreamFn = (_model, _context, options) => {
+			capturedStreamOptions.push(options);
+			throw new Error("capture-stop");
+		};
+		const childSessionId = "child-provider-session";
+		const launchLane = "parent-cache:task:0";
+		const mainAgent = new Agent({
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			sessionId: childSessionId,
+			promptCacheKey: launchLane,
+		});
+		session = new AgentSession({
+			agent: mainAgent,
+			sessionManager,
+			settings: settings(),
+			modelRegistry,
+			advisorTools: fixedAdvisorTools(),
+			advisorStreamFn: captureStreamFn,
+		});
+		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+		expect(advisor.promptCacheKey).toBe(launchLane);
+
+		session.rotateProviderPromptCacheKey(childSessionId);
+		expect(mainAgent.promptCacheKey).toBe(childSessionId);
+		expect(advisor.promptCacheKey).toBe(childSessionId);
+		await advisor.prompt("review after handoff").catch(() => {});
+		expect(capturedStreamOptions.at(-1)?.promptCacheKey).toBe(childSessionId);
+		expect(capturedStreamOptions.at(-1)?.promptCacheKey).not.toBe(launchLane);
 	});
 
 	it("propagates the advisor's own provider session id via metadata.user_id, distinct from the main agent", async () => {
