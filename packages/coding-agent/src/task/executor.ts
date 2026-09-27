@@ -4319,19 +4319,26 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					},
 				});
 				if (AgentLifecycleManager.global().has(id, session)) {
-					const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
-					const advisorSettled = await session.waitForAdvisorCatchup(remainingMs);
-					let sessionSettled = false;
-					if (advisorSettled && remainingMs > 0) {
+					session.prepareForHeadlessAdvisorDrain();
+					const awaitIdle = async (): Promise<boolean> => {
 						try {
 							await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
 								session.waitForIdle(),
 							);
-							sessionSettled = true;
-						} catch {}
-					}
+							return true;
+						} catch {
+							return false;
+						}
+					};
+					const firstAdvisorSettled = await session.waitForAdvisorCatchup(
+						Math.max(0, cleanupDeadlineAt - Date.now()),
+					);
+					const firstIdle = firstAdvisorSettled && (await awaitIdle());
+					const secondAdvisorSettled =
+						firstIdle && (await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now())));
+					const fullySettled = secondAdvisorSettled && (await awaitIdle());
 					session.rotateProviderPromptCacheKey(session.agent.sessionId ?? session.sessionId);
-					if (sessionSettled) await options.onPromptCacheLaneReleased?.();
+					if (fullySettled) await options.onPromptCacheLaneReleased?.();
 				}
 			}
 			if (jobManager) {

@@ -76,6 +76,7 @@ function createHarness(options?: {
 	providerPromptCacheKey?: string;
 	waitForAdvisorCatchup?: () => Promise<boolean>;
 	waitForIdle?: () => Promise<void>;
+	prepareForHeadlessAdvisorDrain?: () => void;
 }): SessionHarness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
@@ -137,7 +138,7 @@ function createHarness(options?: {
 		},
 		waitForIdle: options?.waitForIdle ?? (async () => {}),
 		isAdvisorActive: () => false,
-		prepareForHeadlessAdvisorDrain: () => {},
+		prepareForHeadlessAdvisorDrain: options?.prepareForHeadlessAdvisorDrain ?? (() => {}),
 		waitForAdvisorCatchup: options?.waitForAdvisorCatchup ?? (async () => true),
 		getLastAssistantMessage: () => messages[messages.length - 1],
 		hasPendingAsyncWork: () => false,
@@ -250,15 +251,22 @@ describe("runSubprocess result acceptance", () => {
 		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
 	});
 
-	it("withholds lane release until advisor catch-up settles", async () => {
-		const catchup = Promise.withResolvers<boolean>();
-		const catchupStarted = Promise.withResolvers<void>();
+	it("withholds lane release until the second advisor catch-up settles", async () => {
+		const secondCatchup = Promise.withResolvers<boolean>();
+		const secondCatchupStarted = Promise.withResolvers<void>();
+		let catchupCalls = 0;
+		let drainPrepared = false;
 		const harness = createHarness({
 			providerSessionId: "child-provider-session",
 			providerPromptCacheKey: "parent-cache:task:0",
+			prepareForHeadlessAdvisorDrain: () => {
+				drainPrepared = true;
+			},
 			waitForAdvisorCatchup: async () => {
-				catchupStarted.resolve();
-				return catchup.promise;
+				catchupCalls += 1;
+				if (catchupCalls === 1) return true;
+				secondCatchupStarted.resolve();
+				return secondCatchup.promise;
 			},
 		});
 		registerRunning(harness.session);
@@ -281,10 +289,12 @@ describe("runSubprocess result acceptance", () => {
 			},
 		});
 
-		await catchupStarted.promise;
+		await secondCatchupStarted.promise;
+		expect(drainPrepared).toBe(true);
 		expect(laneReleases).toBe(0);
-		catchup.resolve(true);
+		secondCatchup.resolve(true);
 		await run;
+		expect(catchupCalls).toBe(2);
 		expect(laneReleases).toBe(1);
 	});
 
