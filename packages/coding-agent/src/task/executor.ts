@@ -431,6 +431,10 @@ export interface ExecutorOptions {
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
 	/** Parent session whose stored credential affinities seed the child session. */
 	credentialSourceSessionId?: string;
+	/** Stable task cache lane, distinct from the child's provider session id. */
+	providerPromptCacheKey?: string;
+	/** Called after a retained child rotates off its launch cache lane. */
+	onPromptCacheLaneReleased?: () => Promise<void>;
 	worktree?: string;
 	agent: AgentDefinition;
 	task: string;
@@ -3851,6 +3855,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				credentialSourceSessionId: options.credentialSourceSessionId,
+				providerPromptCacheKey: options.providerPromptCacheKey,
+				providerPromptCacheKeySource: "explicit",
 				settings: subagentSettings,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
@@ -4031,9 +4037,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 								AgentRegistry.global().get(MAIN_AGENT_ID)?.sessionFile,
 						);
 					}
-					const { session: revived } = await createAgentSession(
-						buildSubagentSessionOptions(reopened, expectedAgentRef, true),
-					);
+					const reviveOptions = buildSubagentSessionOptions(reopened, expectedAgentRef, true);
+					reviveOptions.providerPromptCacheKey = reopened.getSessionId();
+					const { session: revived } = await createAgentSession(reviveOptions);
 					// Re-run the executor's extension wiring on the rebuilt session.
 					// Skipping it leaves the runner pre-init, so a `tool_call` handler
 					// touching a runtime action trips the fail-closed gate and blocks
@@ -4312,6 +4318,41 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						deferCleanup(completion);
 					},
 				});
+				if (AgentLifecycleManager.global().has(id, session)) {
+					const quiescence = (async (): Promise<void> => {
+						session.prepareForHeadlessAdvisorDrain();
+						const awaitIdle = async (): Promise<boolean> => {
+							try {
+								await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
+									session.waitForIdle(),
+								);
+								return true;
+							} catch {
+								return false;
+							}
+						};
+						const firstAdvisorSettled = await session.waitForAdvisorCatchup(
+							Math.max(0, cleanupDeadlineAt - Date.now()),
+						);
+						const firstIdle = firstAdvisorSettled && (await awaitIdle());
+						const secondAdvisorSettled =
+							firstIdle && (await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now())));
+						const fullySettled = secondAdvisorSettled && (await awaitIdle());
+						const promptCacheKey = session.agent.sessionId ?? session.sessionId;
+						if (typeof session.rotateProviderPromptCacheKey === "function") {
+							session.rotateProviderPromptCacheKey(promptCacheKey);
+						} else {
+							session.agent.promptCacheKey = promptCacheKey;
+						}
+						if (fullySettled) await options.onPromptCacheLaneReleased?.();
+					})();
+					void quiescence.catch(error => {
+						logger.warn("Subagent cache-lane quiescence failed", {
+							id,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					});
+				}
 			}
 			if (jobManager) {
 				if (deferredSessionShutdown) {
