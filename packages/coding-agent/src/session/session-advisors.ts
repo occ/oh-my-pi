@@ -482,6 +482,7 @@ export class SessionAdvisors {
 	#advisorCostSnapshotBarrier: Promise<void> | undefined;
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
+	#preserveHeadlessAdvisorAdvice = false;
 	#preserveTerminalYieldAdvice = false;
 	/** Keeps terminal non-blocker advice on the visible card route during unwind. */
 	#terminalUnwindActive = false;
@@ -2238,6 +2239,7 @@ export class SessionAdvisors {
 	 */
 	prepareForHeadlessAdvisorDrain(): void {
 		this.#preserveAdvisorAdvice = true;
+		this.#preserveHeadlessAdvisorAdvice = true;
 	}
 
 	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
@@ -2246,13 +2248,17 @@ export class SessionAdvisors {
 		this.#preserveTerminalYieldAdvice = true;
 	}
 
-	/** Clear terminal-unwind delivery only when a real primary run starts. */
+	/** Restore headless-drain routing only when a genuinely new primary run starts. */
 	onPrimaryAgentStart(): void {
 		this.#terminalUnwindActive = false;
+		if (!this.#preserveHeadlessAdvisorAdvice) return;
+		this.#preserveHeadlessAdvisorAdvice = false;
+		this.#preserveAdvisorAdvice = false;
 	}
 
-	/** Restore normal advisor routing when a kept-alive subagent starts new work. */
+	/** Restore terminal-yield routing at the next primary turn boundary. */
 	onPrimaryTurnStart(): void {
+		if (!this.#preserveTerminalYieldAdvice) return;
 		this.#preserveTerminalYieldAdvice = false;
 		this.#preserveAdvisorAdvice = false;
 	}

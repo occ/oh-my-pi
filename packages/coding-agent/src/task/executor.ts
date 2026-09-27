@@ -4337,7 +4337,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					const secondAdvisorSettled =
 						firstIdle && (await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now())));
 					const fullySettled = secondAdvisorSettled && (await awaitIdle());
-					session.rotateProviderPromptCacheKey(session.agent.sessionId ?? session.sessionId);
+					const promptCacheKey = session.agent.sessionId ?? session.sessionId;
+					if (typeof session.rotateProviderPromptCacheKey === "function") {
+						session.rotateProviderPromptCacheKey(promptCacheKey);
+					} else {
+						session.agent.promptCacheKey = promptCacheKey;
+					}
 					if (fullySettled) await options.onPromptCacheLaneReleased?.();
 				}
 			}
