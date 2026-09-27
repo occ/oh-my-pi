@@ -4346,7 +4346,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						}
 						if (fullySettled) await options.onPromptCacheLaneReleased?.();
 					})();
-					lateCleanups.push(quiescence);
+					void quiescence.catch(error => {
+						logger.warn("Subagent cache-lane quiescence failed", {
+							id,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					});
 				}
 			}
 			if (jobManager) {
