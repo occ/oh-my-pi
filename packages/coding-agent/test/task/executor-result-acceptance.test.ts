@@ -74,6 +74,7 @@ function createHarness(options?: {
 	asyncJobManager?: AsyncJobManager;
 	providerSessionId?: string;
 	providerPromptCacheKey?: string;
+	waitForAdvisorCatchup?: () => Promise<boolean>;
 }): SessionHarness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
@@ -136,7 +137,7 @@ function createHarness(options?: {
 		waitForIdle: async () => {},
 		isAdvisorActive: () => false,
 		prepareForHeadlessAdvisorDrain: () => {},
-		waitForAdvisorCatchup: async () => true,
+		waitForAdvisorCatchup: options?.waitForAdvisorCatchup ?? (async () => true),
 		getLastAssistantMessage: () => messages[messages.length - 1],
 		hasPendingAsyncWork: () => false,
 		getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
@@ -246,6 +247,76 @@ describe("runSubprocess result acceptance", () => {
 		expect(laneReleases).toBe(1);
 		await runSubagentFollowUpTurn({ id: AGENT_ID, agent: baseAgent, message: "continue" });
 		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
+	});
+
+	it("withholds lane release until advisor catch-up settles", async () => {
+		const catchup = Promise.withResolvers<boolean>();
+		const catchupStarted = Promise.withResolvers<void>();
+		const harness = createHarness({
+			providerSessionId: "child-provider-session",
+			providerPromptCacheKey: "parent-cache:task:0",
+			waitForAdvisorCatchup: async () => {
+				catchupStarted.resolve();
+				return catchup.promise;
+			},
+		});
+		registerRunning(harness.session);
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: harness.session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} as CreateAgentSessionResult);
+		let laneReleases = 0;
+		const run = runSubprocess({
+			cwd: "/tmp",
+			agent: baseAgent,
+			task: "do the work",
+			index: 0,
+			id: AGENT_ID,
+			providerPromptCacheKey: "parent-cache:task:0",
+			onPromptCacheLaneReleased: async () => {
+				laneReleases += 1;
+			},
+		});
+
+		await catchupStarted.promise;
+		expect(laneReleases).toBe(0);
+		catchup.resolve(true);
+		await run;
+		expect(laneReleases).toBe(1);
+	});
+
+	it("retains the lane when advisor catch-up cannot settle", async () => {
+		const harness = createHarness({
+			providerSessionId: "child-provider-session",
+			providerPromptCacheKey: "parent-cache:task:0",
+			waitForAdvisorCatchup: async () => false,
+		});
+		registerRunning(harness.session);
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: harness.session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} as CreateAgentSessionResult);
+		let laneReleases = 0;
+
+		await runSubprocess({
+			cwd: "/tmp",
+			agent: baseAgent,
+			task: "do the work",
+			index: 0,
+			id: AGENT_ID,
+			providerPromptCacheKey: "parent-cache:task:0",
+			onPromptCacheLaneReleased: async () => {
+				laneReleases += 1;
+			},
+		});
+
+		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
+		expect(laneReleases).toBe(0);
+		await AgentLifecycleManager.global().release(AGENT_ID);
 	});
 
 	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {

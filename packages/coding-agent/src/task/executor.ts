@@ -4319,8 +4319,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					},
 				});
 				if (AgentLifecycleManager.global().has(id, session)) {
+					const advisorSettled = await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
 					session.rotateProviderPromptCacheKey(session.agent.sessionId ?? session.sessionId);
-					await options.onPromptCacheLaneReleased?.();
+					if (advisorSettled) await options.onPromptCacheLaneReleased?.();
 				}
 			}
 			if (jobManager) {
