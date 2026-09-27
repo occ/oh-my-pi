@@ -116,6 +116,8 @@ export class TanCommandController {
 		const cloneId = `Tan-${Snowflake.next()}`;
 		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
 		const label = `/tan ${previewWork(trimmedWork)}`;
+		const cloneProviderSessionId = `${parentSessionId}:tan:${Snowflake.next()}`;
+		const clonePromptCacheKey = `${parentPromptCacheKey}:tan:${cloneId}`;
 
 		await this.ctx.sessionManager.ensureOnDisk();
 		await this.ctx.sessionManager.flush();
@@ -156,8 +158,9 @@ export class TanCommandController {
 								thinkingLevel,
 								systemPrompt,
 								toolNames,
-								providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
+								providerSessionId: cloneProviderSessionId,
 								providerPromptCacheKey: parentPromptCacheKey,
+								taskPromptCacheKeyPrefix: clonePromptCacheKey,
 								modelRegistry,
 								authStorage: modelRegistry.authStorage,
 								settings,

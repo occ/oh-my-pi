@@ -219,6 +219,41 @@ describe("AgentSession advisor provider-options parity", () => {
 		expect(advisor.sessionId).not.toBe(advisor.promptCacheKey);
 	});
 
+	it("refreshes a retained child advisor when its launch cache lane is released", async () => {
+		const capturedStreamOptions: Array<SimpleStreamOptions | undefined> = [];
+		const captureStreamFn: StreamFn = (_model, _context, options) => {
+			capturedStreamOptions.push(options);
+			throw new Error("capture-stop");
+		};
+		const childSessionId = "child-provider-session";
+		const launchLane = "parent-cache:task:0";
+		const mainAgent = new Agent({
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			sessionId: childSessionId,
+			promptCacheKey: launchLane,
+		});
+		session = new AgentSession({
+			agent: mainAgent,
+			sessionManager,
+			settings: settings(),
+			modelRegistry,
+			advisorTools: [],
+			advisorStreamFn: captureStreamFn,
+		});
+		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+		expect(advisor.promptCacheKey).toBe(launchLane);
+
+		session.rotateProviderPromptCacheKey(childSessionId);
+		expect(mainAgent.promptCacheKey).toBe(childSessionId);
+		expect(advisor.promptCacheKey).toBe(childSessionId);
+		await advisor.prompt("review after handoff").catch(() => {});
+		expect(capturedStreamOptions.at(-1)?.promptCacheKey).toBe(childSessionId);
+		expect(capturedStreamOptions.at(-1)?.promptCacheKey).not.toBe(launchLane);
+	});
+
 	it("propagates the advisor's own provider session id via metadata.user_id, distinct from the main agent", async () => {
 		// Regression for #6625: the separately constructed advisor Agent had no
 		// metadata resolver, so its outbound Anthropic request omitted the

@@ -69,6 +69,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"streamIdleTimeoutMs?": "number >= 0",
 		"streamMarkupHealingPattern?": '"kimi" | "dsml" | "qwen" | "thinking"',
 		"supportsLongPromptCacheRetention?": "boolean",
+		"supportsPromptCacheKey?": "boolean",
 		"supportsReasoningParams?": "boolean",
 		"supportsReasoningSummary?": "boolean",
 		"statefulResponses?": "boolean",
