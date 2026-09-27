@@ -47,12 +47,14 @@ import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails
 import { AsyncJobError, type AsyncJobManagerApi } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry, isResumable } from "../registry/agent-registry";
+import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
 import { createEvalCustomTools, describeEvalTools, evalToolsEnabled } from "./eval-tools";
 import { getPerCallModelAdvertisement, type PerCallModelAdvertisement } from "./model-approval";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
+import { CacheLanePool, taskCacheLaneKey } from "./cache-lanes";
 import { renderStepsBrief } from "./steps";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
@@ -806,6 +808,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			},
 		},
 	};
+	/** Cache lanes mirror live task concurrency without serializing siblings. */
+	readonly #cacheLanes = new CacheLanePool();
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -1849,6 +1853,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const startTime = Date.now();
 		const assignment = spawnAssignment(params);
 		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
+		const parentCacheKey = this.session.getTaskPromptCacheKeyPrefix?.() ?? this.session.getProviderPromptCacheKey?.();
+		const cacheLane = parentCacheKey === undefined ? undefined : this.#cacheLanes.acquire();
+		const providerPromptCacheKey =
+			parentCacheKey === undefined || cacheLane === undefined
+				? undefined
+				: taskCacheLaneKey(parentCacheKey, cacheLane);
+		let cacheLaneReleased = false;
+		let cacheLaneRetained = false;
+		const releaseCacheLane = async (): Promise<void> => {
+			if (cacheLane === undefined || cacheLaneReleased) return;
+			cacheLaneReleased = true;
+			this.#cacheLanes.release(cacheLane);
+		};
 		let latestProgress: AgentProgress | undefined;
 		try {
 			const execution = await runStructuredSubagent({
@@ -1885,6 +1902,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...(onArtifactsRetained ? { onArtifactsRetained } : {}),
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
+				providerPromptCacheKey,
+				onRelease: releaseCacheLane,
+				onPromptCacheLaneReleased: releaseCacheLane,
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
@@ -1905,6 +1925,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					});
 				},
 			});
+			cacheLaneRetained = AgentLifecycleManager.global().has(execution.result.id);
 			return this.#buildResultPayload(
 				execution.result,
 				execution.policy.discovery.projectAgentsDir,
@@ -1936,6 +1957,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					...(latestProgress ? { progress: [latestProgress] } : {}),
 				},
 			};
+		} finally {
+			const childId = latestProgress?.id ?? preAllocatedId;
+			cacheLaneRetained ||= childId !== undefined && AgentLifecycleManager.global().has(childId);
+			if (!cacheLaneRetained) await releaseCacheLane();
 		}
 	}
 
