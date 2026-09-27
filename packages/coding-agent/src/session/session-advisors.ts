@@ -2253,7 +2253,6 @@ export class SessionAdvisors {
 
 	/** Restore normal advisor routing when a kept-alive subagent starts new work. */
 	onPrimaryTurnStart(): void {
-		if (!this.#preserveTerminalYieldAdvice) return;
 		this.#preserveTerminalYieldAdvice = false;
 		this.#preserveAdvisorAdvice = false;
 	}
