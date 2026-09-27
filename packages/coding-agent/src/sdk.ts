@@ -584,6 +584,8 @@ export interface CreateAgentSessionOptions {
 	providerPromptCacheKey?: string;
 	/** Whether `providerPromptCacheKey` is caller-pinned or inherited from a full fork. */
 	providerPromptCacheKeySource?: "explicit" | "fork";
+	/** Optional task-lane namespace, distinct from the session's own transport cache key. */
+	taskPromptCacheKeyPrefix?: string;
 	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
 	deadline?: number;
 
@@ -2031,6 +2033,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getApiKey: options.getApiKey,
 			getCredentialSourceSessionId: options.getApiKey ? undefined : () => agent.sessionId,
 			getProviderPromptCacheKey: () => agent.promptCacheKey ?? agent.sessionId,
+			getTaskPromptCacheKeyPrefix: () => options.taskPromptCacheKeyPrefix ?? agent.promptCacheKey ?? agent.sessionId,
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},
@@ -4212,9 +4215,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
 			getAgentId: () => "advisor",
-			getProviderPromptCacheKey: () =>
+			getTaskPromptCacheKeyPrefix: () =>
 				advisorTaskPromptCacheKey(
-					toolSession.getProviderPromptCacheKey?.(),
+					toolSession.getTaskPromptCacheKeyPrefix?.() ?? toolSession.getProviderPromptCacheKey?.(),
 					sessionManager.getSessionId?.() ?? null,
 				),
 			// The primary's availability signals are wrong for advisors: their tool

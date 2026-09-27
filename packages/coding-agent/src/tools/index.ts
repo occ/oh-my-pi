@@ -233,6 +233,8 @@ export interface ToolSession {
 	getCredentialSourceSessionId?: () => string | undefined;
 	/** Stable provider prompt-cache identity used to warm task-agent lanes. */
 	getProviderPromptCacheKey?: () => string | undefined;
+	/** Optional task-lane namespace; defaults to the provider prompt-cache key. */
+	getTaskPromptCacheKeyPrefix?: () => string | undefined;
 	/** Skip subprocess-kernel availability checks and warmup */
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */

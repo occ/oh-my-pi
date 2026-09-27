@@ -1496,7 +1496,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const startTime = Date.now();
 		const assignment = (params.task ?? "").trim();
 		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
-		const parentCacheKey = this.session.getProviderPromptCacheKey?.();
+		const parentCacheKey = this.session.getTaskPromptCacheKeyPrefix?.() ?? this.session.getProviderPromptCacheKey?.();
 		const cacheLane = parentCacheKey === undefined ? undefined : this.#cacheLanes.acquire();
 		const providerPromptCacheKey =
 			parentCacheKey === undefined || cacheLane === undefined

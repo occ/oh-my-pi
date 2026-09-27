@@ -489,7 +489,8 @@ describe("TanCommandController", () => {
 		expect(clone.dispose).toHaveBeenCalled();
 		expect(createAgentSessionSpy.mock.calls[0]?.[0]).toEqual(
 			expect.objectContaining({
-				providerPromptCacheKey: expect.stringMatching(/^parent-session:tan:Tan-/) as unknown as string,
+				providerPromptCacheKey: "parent-session",
+				taskPromptCacheKeyPrefix: expect.stringMatching(/^parent-session:tan:Tan-/) as unknown as string,
 				parentTaskPrefix: expect.stringMatching(/^Tan-/) as unknown as string,
 				agentDisplayName: "tan",
 			}),
@@ -534,8 +535,9 @@ describe("TanCommandController", () => {
 		await run({ jobId: "job-1", signal: new AbortController().signal, reportProgress: async () => {} });
 
 		const opts = createAgentSessionSpy.mock.calls[0]?.[0];
-		expect(opts?.providerPromptCacheKey).toMatch(/^grandparent-cache-key:tan:Tan-/);
-		expect(`${opts?.providerPromptCacheKey}:task:0`).not.toBe(`${parentPromptCacheKey}:task:0`);
+		expect(opts?.providerPromptCacheKey).toBe(parentPromptCacheKey);
+		expect(opts?.taskPromptCacheKeyPrefix).toMatch(/^grandparent-cache-key:tan:Tan-/);
+		expect(`${opts?.taskPromptCacheKeyPrefix}:task:0`).not.toBe(`${parentPromptCacheKey}:task:0`);
 		expect(opts?.providerSessionId).toMatch(/^parent-session:tan:/);
 	});
 
