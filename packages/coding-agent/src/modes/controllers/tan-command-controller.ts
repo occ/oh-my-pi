@@ -184,6 +184,7 @@ export class TanCommandController {
 		const label = `/tan ${previewWork(trimmedWork)}`;
 		const naming = generateTanName(session, trimmedWork);
 		this.ctx.showStatus("Naming background tan…");
+		const cloneProviderSessionId = `${parentSessionId}:tan:${Snowflake.next()}`;
 
 		await this.ctx.sessionManager.ensureOnDisk();
 		await this.ctx.sessionManager.flush();
@@ -196,6 +197,7 @@ export class TanCommandController {
 		await ids.reserve(agentRegistry.list().map(ref => ref.id));
 		const cloneId = await ids.allocate(name);
 		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
+		const clonePromptCacheKey = `${parentPromptCacheKey}:tan:${cloneId}`;
 
 		let jobId = "";
 		try {
@@ -239,9 +241,10 @@ export class TanCommandController {
 								toolNames,
 								mountedToolNames,
 								advertiseHeadlessAsk: activeToolNames.includes("ask"),
-								providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
+								providerSessionId: cloneProviderSessionId,
 								providerPromptCacheKey: parentPromptCacheKey,
 								taskPromptCacheKey,
+								taskPromptCacheKeyPrefix: clonePromptCacheKey,
 								modelRegistry,
 								authStorage: modelRegistry.authStorage,
 								settings,
