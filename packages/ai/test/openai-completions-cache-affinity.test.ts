@@ -116,6 +116,16 @@ describe("OpenAI Chat Completions explicit prompt cache policy", () => {
 		expect(body).not.toHaveProperty("prompt_cache_key");
 	});
 
+	it("sends prompt_cache_key when model compatibility enables it", async () => {
+		const model: Model<"openai-completions"> = {
+			...openAI56CompletionsModel,
+			compat: { ...openAI56CompletionsModel.compat, supportsPromptCacheKey: true },
+		};
+		const { body } = await captureRequest({ promptCacheKey: "parent-cache:task:0" }, model);
+
+		expect(body.prompt_cache_key).toBe("parent-cache:task:0");
+	});
+
 	it("routes explicit policy through streamSimple and marks existing text-only history", async () => {
 		const previousAssistant: AssistantMessage = {
 			role: "assistant",
