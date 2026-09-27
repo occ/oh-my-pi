@@ -119,6 +119,12 @@ export interface StructuredSubagentRequest {
 	detached?: boolean;
 	invokedAt?: number;
 	acquiredAt?: number;
+	/** Stable cache lane allocated by the task frontend for this child run. */
+	providerPromptCacheKey?: string;
+	/** Releases caller-owned resources when this child lifecycle terminates. */
+	onRelease?: () => Promise<void>;
+	/** Called after a retained child rotates off its launch cache lane. */
+	onPromptCacheLaneReleased?: () => Promise<void>;
 	isolation?: StructuredSubagentIsolationControls;
 	/** The parent agent name forbidden from recursively spawning itself. */
 	blockedAgent?: string;
@@ -490,6 +496,7 @@ function buildExecutorOptions(
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
+		providerPromptCacheKey: request.providerPromptCacheKey,
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
@@ -530,6 +537,8 @@ function buildExecutorOptions(
 		maxRuntimeMs: request.maxRuntimeMs,
 		restrictToolNames,
 		keepAlive: request.keepAlive,
+		onRelease: request.onRelease,
+		onPromptCacheLaneReleased: request.onPromptCacheLaneReleased,
 		signal: request.signal,
 		eventBus: session.eventBus,
 		subagentEventBus: session.subagentEventBus,
