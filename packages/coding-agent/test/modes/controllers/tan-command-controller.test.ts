@@ -490,6 +490,7 @@ describe("TanCommandController", () => {
 		expect(createAgentSessionSpy.mock.calls[0]?.[0]).toEqual(
 			expect.objectContaining({
 				providerPromptCacheKey: "parent-session",
+				taskPromptCacheKeyPrefix: expect.stringMatching(/^parent-session:tan:Tan-/) as unknown as string,
 				parentTaskPrefix: expect.stringMatching(/^Tan-/) as unknown as string,
 				agentDisplayName: "tan",
 			}),
@@ -518,10 +519,9 @@ describe("TanCommandController", () => {
 		expect(opts?.parentTaskPrefix).not.toBe("FocusedParent");
 	});
 
-	it("pins the parent's effective cache key when the parent itself carries a pinned promptCacheKey", async () => {
-		// A parent that is itself a fork/tan caches under `agent.promptCacheKey`,
-		// not its own session id — the clone must read that exact shard.
-		const harness = createContext({ parentPromptCacheKey: "grandparent-cache-key" });
+	it("namespaces a tan clone away from its parent's task lanes", async () => {
+		const parentPromptCacheKey = "grandparent-cache-key";
+		const harness = createContext({ parentPromptCacheKey });
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const { clone } = createCloneStub();
 		const createAgentSessionSpy = vi
@@ -535,7 +535,9 @@ describe("TanCommandController", () => {
 		await run({ jobId: "job-1", signal: new AbortController().signal, reportProgress: async () => {} });
 
 		const opts = createAgentSessionSpy.mock.calls[0]?.[0];
-		expect(opts?.providerPromptCacheKey).toBe("grandparent-cache-key");
+		expect(opts?.providerPromptCacheKey).toBe(parentPromptCacheKey);
+		expect(opts?.taskPromptCacheKeyPrefix).toMatch(/^grandparent-cache-key:tan:Tan-/);
+		expect(`${opts?.taskPromptCacheKeyPrefix}:task:0`).not.toBe(`${parentPromptCacheKey}:task:0`);
 		expect(opts?.providerSessionId).toMatch(/^parent-session:tan:/);
 	});
 
