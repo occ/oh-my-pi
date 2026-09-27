@@ -1,0 +1,180 @@
+# FleetDriver-maintained release (-fd.N) for the occ fork.
+#
+# ci.yml's release path depends on upstream's self-hosted omp-kata pool,
+# npm/Homebrew credentials, and the full platform matrix. This workflow
+# reuses the same composite actions and release scripts on GitHub-hosted
+# runners only, for the two platforms FleetDriver consumes: linux-x64 and
+# darwin-arm64. Both addons are built from the dispatched commit, so binary
+# and native addon always share one source tree.
+name: FleetDriver release
+
+on:
+   workflow_dispatch:
+      inputs:
+         tag:
+            description: "Maintained release tag, e.g. v18.3.2-fd.2 (must not exist)"
+            required: true
+            type: string
+
+concurrency:
+   group: fd-release-${{ inputs.tag }}
+   cancel-in-progress: false
+
+permissions:
+   contents: read
+
+jobs:
+   validate:
+      name: Validate release tag
+      runs-on: ubuntu-22.04
+      steps:
+         - uses: actions/checkout@v4
+         - name: Check tag format, version, and absence
+           env:
+              TAG: ${{ inputs.tag }}
+              GH_TOKEN: ${{ github.token }}
+           run: |
+              set -euo pipefail
+              if ! [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-fd\.[0-9]+$ ]]; then
+                echo "::error::tag must match vX.Y.Z-fd.N: $TAG"; exit 1
+              fi
+              base="${BASH_REMATCH[1]}"
+              pkg="$(jq -r .version packages/coding-agent/package.json)"
+              if [ "$pkg" != "$base" ]; then
+                echo "::error::tag base $base != packages/coding-agent version $pkg"; exit 1
+              fi
+              # Published tags are immutable; never overwrite a release.
+              if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+                echo "::error::tag $TAG already exists"; exit 1
+              fi
+
+   build:
+      name: "Build: ${{ matrix.target_id }}"
+      needs: [validate]
+      strategy:
+         fail-fast: false
+         matrix:
+            include:
+               - os: ubuntu-22.04
+                 platform: linux
+                 target_id: linux-x64
+                 native_targets: linux-x64-baseline linux-x64-modern
+               - os: macos-14
+                 platform: darwin
+                 target_id: darwin-arm64
+                 native_targets: darwin-arm64
+      runs-on: ${{ matrix.os }}
+      env:
+         BINARY: packages/coding-agent/binaries/omp-${{ matrix.target_id }}
+         MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         # Source-built addons, not npm/artifact downloads: a mismatched addon
+         # is what broke --smoke-test in v18.3.2-fd.1.
+         - name: Build native addons (bazel)
+           uses: ./.github/actions/bazel-natives
+           with:
+              targets: ${{ matrix.native_targets }}
+              cache-scope: fd-release-${{ matrix.target_id }}
+         - name: Build release binary
+           env:
+              RELEASE_TARGETS: ${{ matrix.target_id }}
+           run: bun run ci:release:build-binaries
+         - name: Sign and notarize macOS binary (Developer ID)
+           if: matrix.platform == 'darwin' && env.MACOS_SIGNING == 'true'
+           env:
+              APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+              APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+              APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+              APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+              APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+           run: bash scripts/ci-macos-sign.sh "$BINARY"
+         - name: Verify macOS signature
+           if: matrix.platform == 'darwin'
+           run: |
+              file "$BINARY" | grep -q 'arm64'
+              codesign --verify --strict --verbose=4 "$BINARY"
+         - name: Smoke release binary
+           run: |
+              runtime_dir="$(mktemp -d)"
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$BINARY" --version
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$BINARY" --smoke-test
+         - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           with:
+              name: omp-binary-${{ matrix.target_id }}
+              path: ${{ env.BINARY }}
+              if-no-files-found: error
+
+   publish:
+      name: Publish GitHub release
+      needs: [build]
+      runs-on: ubuntu-22.04
+      permissions:
+         contents: write
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           with:
+              pattern: omp-binary-*
+              path: packages/coding-agent/binaries
+              merge-multiple: true
+         - name: Generate checksums
+           run: bun run ci:release:checksums SHA256SUMS.txt packages/coding-agent/binaries/omp-*
+         - name: Write release notes
+           env:
+              TAG: ${{ inputs.tag }}
+              SIGNED: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+           run: |
+              {
+                echo "FleetDriver-maintained OMP release \`$TAG\` built from \`$GITHUB_SHA\`."
+                echo
+                echo "Assets: \`omp-linux-x64\`, \`omp-darwin-arm64\`. Each was built with its native addon from this commit and passed \`--version\` and \`--smoke-test\` on its native GitHub-hosted runner before publication."
+                echo
+                if [ "$SIGNED" = true ]; then
+                  echo "macOS signing: Developer ID + notarization."
+                else
+                  echo "macOS signing: ad-hoc (not notarized)."
+                fi
+              } > release-notes.md
+         - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+           with:
+              tag_name: ${{ inputs.tag }}
+              target_commitish: ${{ github.sha }}
+              make_latest: "true"
+              body_path: release-notes.md
+              fail_on_unmatched_files: true
+              files: |
+                 packages/coding-agent/binaries/omp-linux-x64
+                 packages/coding-agent/binaries/omp-darwin-arm64
+                 SHA256SUMS.txt
+
+   # The published bytes, not the pre-upload files, are the acceptance boundary.
+   verify:
+      name: "Verify published: ${{ matrix.target_id }}"
+      needs: [publish]
+      strategy:
+         fail-fast: false
+         matrix:
+            include:
+               - { os: ubuntu-22.04, target_id: linux-x64 }
+               - { os: macos-14, target_id: darwin-arm64 }
+      runs-on: ${{ matrix.os }}
+      steps:
+         - name: Download, checksum, sign-check, and smoke
+           env:
+              URL: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}
+              ASSET: omp-${{ matrix.target_id }}
+           run: |
+              set -euo pipefail
+              dir="$(mktemp -d)"; cd "$dir"
+              curl -fsSL --retry 3 -o "$ASSET" "$URL/$ASSET"
+              curl -fsSL --retry 3 -o SHA256SUMS.txt "$URL/SHA256SUMS.txt"
+              grep " $ASSET\$" SHA256SUMS.txt | shasum -a 256 -c -
+              chmod +x "$ASSET"
+              if [ "$(uname)" = Darwin ]; then
+                codesign --verify --strict --verbose=4 "./$ASSET"
+              fi
+              HOME="$dir/home" XDG_DATA_HOME="$dir/xdg" "./$ASSET" --version
+              HOME="$dir/home" XDG_DATA_HOME="$dir/xdg" "./$ASSET" --smoke-test
