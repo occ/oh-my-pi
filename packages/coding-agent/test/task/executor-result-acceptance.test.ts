@@ -232,6 +232,7 @@ describe("runSubprocess result acceptance", () => {
 			eventBus: new EventBus(),
 		} as CreateAgentSessionResult);
 		let laneReleases = 0;
+		const laneReleased = Promise.withResolvers<void>();
 
 		await runSubprocess({
 			cwd: "/tmp",
@@ -242,9 +243,11 @@ describe("runSubprocess result acceptance", () => {
 			providerPromptCacheKey: "parent-cache:task:0",
 			onPromptCacheLaneReleased: async () => {
 				laneReleases += 1;
+				laneReleased.resolve();
 			},
 		});
 
+		await laneReleased.promise;
 		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
 		expect(laneReleases).toBe(1);
 		await runSubagentFollowUpTurn({ id: AGENT_ID, agent: baseAgent, message: "continue" });
@@ -277,6 +280,7 @@ describe("runSubprocess result acceptance", () => {
 			eventBus: new EventBus(),
 		} as CreateAgentSessionResult);
 		let laneReleases = 0;
+		const laneReleased = Promise.withResolvers<void>();
 		const run = runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
@@ -286,14 +290,16 @@ describe("runSubprocess result acceptance", () => {
 			providerPromptCacheKey: "parent-cache:task:0",
 			onPromptCacheLaneReleased: async () => {
 				laneReleases += 1;
+				laneReleased.resolve();
 			},
 		});
 
 		await secondCatchupStarted.promise;
 		expect(drainPrepared).toBe(true);
+		await run;
 		expect(laneReleases).toBe(0);
 		secondCatchup.resolve(true);
-		await run;
+		await laneReleased.promise;
 		expect(catchupCalls).toBe(2);
 		expect(laneReleases).toBe(1);
 	});
@@ -349,6 +355,7 @@ describe("runSubprocess result acceptance", () => {
 			eventBus: new EventBus(),
 		} as CreateAgentSessionResult);
 		let laneReleases = 0;
+		const laneReleased = Promise.withResolvers<void>();
 		const run = runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
@@ -358,13 +365,15 @@ describe("runSubprocess result acceptance", () => {
 			providerPromptCacheKey: "parent-cache:task:0",
 			onPromptCacheLaneReleased: async () => {
 				laneReleases += 1;
+				laneReleased.resolve();
 			},
 		});
 
 		await idleStarted.promise;
+		await run;
 		expect(laneReleases).toBe(0);
 		idle.resolve();
-		await run;
+		await laneReleased.promise;
 		expect(laneReleases).toBe(1);
 	});
 

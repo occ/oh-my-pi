@@ -4319,31 +4319,34 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					},
 				});
 				if (AgentLifecycleManager.global().has(id, session)) {
-					session.prepareForHeadlessAdvisorDrain();
-					const awaitIdle = async (): Promise<boolean> => {
-						try {
-							await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
-								session.waitForIdle(),
-							);
-							return true;
-						} catch {
-							return false;
+					const quiescence = (async (): Promise<void> => {
+						session.prepareForHeadlessAdvisorDrain();
+						const awaitIdle = async (): Promise<boolean> => {
+							try {
+								await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
+									session.waitForIdle(),
+								);
+								return true;
+							} catch {
+								return false;
+							}
+						};
+						const firstAdvisorSettled = await session.waitForAdvisorCatchup(
+							Math.max(0, cleanupDeadlineAt - Date.now()),
+						);
+						const firstIdle = firstAdvisorSettled && (await awaitIdle());
+						const secondAdvisorSettled =
+							firstIdle && (await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now())));
+						const fullySettled = secondAdvisorSettled && (await awaitIdle());
+						const promptCacheKey = session.agent.sessionId ?? session.sessionId;
+						if (typeof session.rotateProviderPromptCacheKey === "function") {
+							session.rotateProviderPromptCacheKey(promptCacheKey);
+						} else {
+							session.agent.promptCacheKey = promptCacheKey;
 						}
-					};
-					const firstAdvisorSettled = await session.waitForAdvisorCatchup(
-						Math.max(0, cleanupDeadlineAt - Date.now()),
-					);
-					const firstIdle = firstAdvisorSettled && (await awaitIdle());
-					const secondAdvisorSettled =
-						firstIdle && (await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now())));
-					const fullySettled = secondAdvisorSettled && (await awaitIdle());
-					const promptCacheKey = session.agent.sessionId ?? session.sessionId;
-					if (typeof session.rotateProviderPromptCacheKey === "function") {
-						session.rotateProviderPromptCacheKey(promptCacheKey);
-					} else {
-						session.agent.promptCacheKey = promptCacheKey;
-					}
-					if (fullySettled) await options.onPromptCacheLaneReleased?.();
+						if (fullySettled) await options.onPromptCacheLaneReleased?.();
+					})();
+					lateCleanups.push(quiescence);
 				}
 			}
 			if (jobManager) {
