@@ -937,6 +937,7 @@ export class AgentSession implements SettingsScope {
 	readonly #streamingEditGuard: StreamingEditGuard;
 	readonly #loopGuards: LoopGuards;
 	#promptInFlightCount = 0;
+	#promptInFlightSettled: PromiseWithResolvers<void> | undefined;
 	#abortInProgress = false;
 	/** Submissions accepted by prompt()/promptCustomMessage()/sendCustomMessage() that have not
 	 *  yet dispatched a turn, queued, or bailed. Preprocessing (manual-compaction wait, slash
@@ -1039,6 +1040,7 @@ export class AgentSession implements SettingsScope {
 
 	#beginInFlight(): void {
 		this.#promptInFlightCount++;
+		this.#promptInFlightSettled ??= Promise.withResolvers<void>();
 		if (this.#promptInFlightCount === 1) {
 			this.#acquirePowerAssertion();
 		}
@@ -1048,6 +1050,8 @@ export class AgentSession implements SettingsScope {
 		if (onSettled) this.#inFlightSettledCallbacks.push(onSettled);
 		this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		if (this.#promptInFlightCount !== 0) return;
+		this.#promptInFlightSettled?.resolve();
+		this.#promptInFlightSettled = undefined;
 		this.yieldQueue.requestIdleFlush();
 		this.#releasePowerAssertion();
 		this.#flushPendingAgentEnd();
@@ -1332,6 +1336,8 @@ export class AgentSession implements SettingsScope {
 
 	#resetInFlight(): void {
 		this.#promptInFlightCount = 0;
+		this.#promptInFlightSettled?.resolve();
+		this.#promptInFlightSettled = undefined;
 		this.yieldQueue.requestIdleFlush();
 		this.#releasePowerAssertion();
 		this.#flushPendingAgentEnd();
@@ -5022,6 +5028,12 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/** Rebind this session and its advisors after a prompt-cache identity handoff. */
+	rotateProviderPromptCacheKey(promptCacheKey: string): void {
+		this.agent.promptCacheKey = promptCacheKey;
+		this.#advisors.refreshProviderIdentity();
+	}
+
 	/**
 	 * Set agent.sessionId from the session manager and install a dynamic
 	 * metadata resolver so every Anthropic API request carries
@@ -5771,12 +5783,13 @@ export class AgentSession implements SettingsScope {
 	async waitForIdle(): Promise<void> {
 		while (true) {
 			await this.agent.waitForIdle();
+			await this.#promptInFlightSettled?.promise;
 			await this.#advisors.waitForPendingCardEvents();
 			// Core subscribers run asynchronously. Retry recovery can still be
 			// rewriting entries before it publishes auto_retry_end.
 			await this.#drainInFlightEventHandlers();
 			await this.#waitForPostPromptRecovery();
-			if (!this.agent.state.isStreaming && this.#inFlightEventHandlers.size === 0) return;
+			if (!this.isStreaming && this.#inFlightEventHandlers.size === 0) return;
 		}
 	}
 	/**
