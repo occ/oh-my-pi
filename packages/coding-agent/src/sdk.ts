@@ -672,6 +672,8 @@ export interface CreateAgentSessionOptions {
 	taskPromptCacheKey?: string;
 	/** Whether `providerPromptCacheKey` is caller-pinned or inherited from a full fork. */
 	providerPromptCacheKeySource?: "explicit" | "fork";
+	/** Optional task-lane namespace, distinct from the session's own transport cache key. */
+	taskPromptCacheKeyPrefix?: string;
 	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
 	deadline?: number;
 	/** Cost gate of the parent session tree; without one the session starts its own from `session.warnCost` / `session.maxCost`. */
@@ -1777,6 +1779,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	return await withOmpExtensionRootScope(explicit, mode, () => createAgentSessionScoped(options));
 }
 
+export function advisorTaskPromptCacheKey(hostKey: string | undefined, advisorId: string | null): string | undefined {
+	return hostKey && advisorId ? `${hostKey}:advisor:${advisorId}` : undefined;
+}
 async function createAgentSessionScoped(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
 	if (options.systemPromptTemplate !== undefined && options.customSystemPrompt !== undefined) {
 		throw new Error("systemPromptTemplate cannot be combined with a literal custom system prompt");
@@ -2401,6 +2406,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// sessions inherit stored affinity into the child's own provider session.
 			getApiKey: options.getApiKey,
 			getCredentialSourceSessionId: options.getApiKey ? undefined : () => agent.sessionId,
+			getProviderPromptCacheKey: () => agent.promptCacheKey ?? agent.sessionId,
+			getTaskPromptCacheKeyPrefix: () => options.taskPromptCacheKeyPrefix ?? agent.promptCacheKey ?? agent.sessionId,
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},
@@ -4795,6 +4802,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
 			getAgentId: () => advisorAgent.id,
+			getTaskPromptCacheKeyPrefix: () =>
+				advisorTaskPromptCacheKey(
+					toolSession.getTaskPromptCacheKeyPrefix?.() ?? toolSession.getProviderPromptCacheKey?.(),
+					sessionManager.getSessionId?.() ?? null,
+				),
 			// The primary's availability signals are wrong for advisors: their tool
 			// slate is filtered separately at runtime (default read/grep/glob, no
 			// write transport), so xd:// devices are unreachable. Images are inlined,
