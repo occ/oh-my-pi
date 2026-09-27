@@ -6,7 +6,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { advisorTaskPromptCacheKey, createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
@@ -141,6 +141,9 @@ describe("task subagent OAuth pin inheritance", () => {
 				`${parentPromptCacheKey}:task:0`,
 				`${parentPromptCacheKey}:task:1`,
 			]);
+			const advisorCacheKey = advisorTaskPromptCacheKey(parentPromptCacheKey, parent.sessionId);
+			if (!advisorCacheKey) throw new Error("Expected advisor task cache namespace");
+			expect(`${advisorCacheKey}:task:0`).not.toBe(`${parentPromptCacheKey}:task:0`);
 
 			// The spawn captured the old affinity. A later parent `/fresh` cannot
 			// change which sticky credential is copied into either child.

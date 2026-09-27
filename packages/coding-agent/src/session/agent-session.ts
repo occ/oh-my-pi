@@ -5613,7 +5613,7 @@ export class AgentSession implements SettingsScope {
 			// rewriting entries before it publishes auto_retry_end.
 			await this.#drainInFlightEventHandlers();
 			await this.#waitForPostPromptRecovery();
-			if (!this.agent.state.isStreaming && this.#inFlightEventHandlers.size === 0) return;
+			if (!this.isStreaming && this.#inFlightEventHandlers.size === 0) return;
 		}
 	}
 	/**

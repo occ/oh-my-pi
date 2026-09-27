@@ -4319,9 +4319,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					},
 				});
 				if (AgentLifecycleManager.global().has(id, session)) {
-					const advisorSettled = await session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
+					const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
+					const advisorSettled = await session.waitForAdvisorCatchup(remainingMs);
+					let sessionSettled = false;
+					if (advisorSettled && remainingMs > 0) {
+						try {
+							await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
+								session.waitForIdle(),
+							);
+							sessionSettled = true;
+						} catch {}
+					}
 					session.rotateProviderPromptCacheKey(session.agent.sessionId ?? session.sessionId);
-					if (advisorSettled) await options.onPromptCacheLaneReleased?.();
+					if (sessionSettled) await options.onPromptCacheLaneReleased?.();
 				}
 			}
 			if (jobManager) {

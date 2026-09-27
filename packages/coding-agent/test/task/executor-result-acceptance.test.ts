@@ -75,6 +75,7 @@ function createHarness(options?: {
 	providerSessionId?: string;
 	providerPromptCacheKey?: string;
 	waitForAdvisorCatchup?: () => Promise<boolean>;
+	waitForIdle?: () => Promise<void>;
 }): SessionHarness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
@@ -134,7 +135,7 @@ function createHarness(options?: {
 			emit({ type: "message_end", message } as AgentSessionEvent);
 			emitTerminalYield({ report: text });
 		},
-		waitForIdle: async () => {},
+		waitForIdle: options?.waitForIdle ?? (async () => {}),
 		isAdvisorActive: () => false,
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: options?.waitForAdvisorCatchup ?? (async () => true),
@@ -317,6 +318,44 @@ describe("runSubprocess result acceptance", () => {
 		expect(harness.session.agent.promptCacheKey).toBe("child-provider-session");
 		expect(laneReleases).toBe(0);
 		await AgentLifecycleManager.global().release(AGENT_ID);
+	});
+
+	it("withholds lane release until an in-flight host wake settles", async () => {
+		const idle = Promise.withResolvers<void>();
+		const idleStarted = Promise.withResolvers<void>();
+		const harness = createHarness({
+			providerSessionId: "child-provider-session",
+			providerPromptCacheKey: "parent-cache:task:0",
+			waitForIdle: async () => {
+				idleStarted.resolve();
+				return idle.promise;
+			},
+		});
+		registerRunning(harness.session);
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: harness.session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} as CreateAgentSessionResult);
+		let laneReleases = 0;
+		const run = runSubprocess({
+			cwd: "/tmp",
+			agent: baseAgent,
+			task: "do the work",
+			index: 0,
+			id: AGENT_ID,
+			providerPromptCacheKey: "parent-cache:task:0",
+			onPromptCacheLaneReleased: async () => {
+				laneReleases += 1;
+			},
+		});
+
+		await idleStarted.promise;
+		expect(laneReleases).toBe(0);
+		idle.resolve();
+		await run;
+		expect(laneReleases).toBe(1);
 	});
 
 	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {

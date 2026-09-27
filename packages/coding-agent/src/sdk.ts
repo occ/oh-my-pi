@@ -1490,6 +1490,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	return await withOmpExtensionRootScope(explicit, mode, () => createAgentSessionScoped(options));
 }
 
+export function advisorTaskPromptCacheKey(hostKey: string | undefined, advisorId: string | null): string | undefined {
+	return hostKey && advisorId ? `${hostKey}:advisor:${advisorId}` : undefined;
+}
 async function createAgentSessionScoped(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
 	if (options.systemPromptTemplate !== undefined && options.customSystemPrompt !== undefined) {
 		throw new Error("systemPromptTemplate cannot be combined with a literal custom system prompt");
@@ -4209,6 +4212,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
 			getAgentId: () => "advisor",
+			getProviderPromptCacheKey: () =>
+				advisorTaskPromptCacheKey(
+					toolSession.getProviderPromptCacheKey?.(),
+					sessionManager.getSessionId?.() ?? null,
+				),
 			// The primary's availability signals are wrong for advisors: their tool
 			// slate is filtered separately at runtime (default read/grep/glob, no
 			// write transport), so xd:// devices are unreachable. Images are inlined,
