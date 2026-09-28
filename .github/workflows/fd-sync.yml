@@ -10,9 +10,9 @@
 # nothing; the next scheduled run retries against the newest upstream tag.
 #
 # Trust boundary: `replay` executes upstream code with a read-only token.
-# `publish` holds FD_SYNC_TOKEN and runs only git/gh. FD_SYNC_TOKEN is a
-# fine-grained PAT for this repository (Contents, Workflows, Actions: write):
-# GITHUB_TOKEN cannot push commits that touch .github/workflows.
+# `publish` holds the FD_SYNC deploy key and runs only git/gh. A deploy key is
+# used because commits under main touch .github/workflows, which GITHUB_TOKEN
+# cannot push.
 name: FleetDriver upstream sync
 
 on:
@@ -36,9 +36,9 @@ jobs:
       runs-on: ubuntu-22.04
       timeout-minutes: 45
       outputs:
-         release: ${{ steps.plan.outputs.release }}
+         mode: ${{ steps.plan.outputs.mode }}
          latest: ${{ steps.plan.outputs.latest }}
-         tree: ${{ steps.rebase.outputs.tree }}
+         tree: ${{ steps.rebase.outputs.tree || steps.plan.outputs.tree }}
       steps:
          - uses: actions/checkout@v4
            with:
@@ -55,28 +55,38 @@ jobs:
               latest="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
               base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)"
               tag="$latest-fd.1"
-              release=true
+              mode=release
+              tree=""
               if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
-                echo "$tag already released; nothing to do"
-                release=false
+                # A prior run may have released but failed to advance main; heal
+                # it by re-rebasing and pushing main when the tree matches.
+                git fetch -q origin "refs/tags/$tag:refs/tags/$tag"
+                tree="$(git rev-parse "$tag^{tree}")"
+                if git merge-base --is-ancestor "$latest" HEAD; then
+                  echo "$tag released and main already follows $latest; nothing to do"
+                  mode=none
+                else
+                  echo "$tag released but main has not advanced; healing main"
+                  mode=advance
+                fi
               elif ! npm view "@oh-my-pi/pi-natives-linux-x64@${latest#v}" version >/dev/null 2>&1; then
                 # Upstream publishes its native leaves after tagging; retry next run.
                 echo "::notice::native addons for $latest are not on npm yet; retrying later"
-                release=false
+                mode=none
               fi
-              echo "base=$base latest=$latest release=$release"
-              { echo "base=$base"; echo "latest=$latest"; echo "release=$release"; } >> "$GITHUB_OUTPUT"
+              echo "base=$base latest=$latest mode=$mode"
+              { echo "base=$base"; echo "latest=$latest"; echo "mode=$mode"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
          - name: Rebase patch queue
            id: rebase
-           if: steps.plan.outputs.release == 'true'
+           if: steps.plan.outputs.mode == 'release'
            env:
               BASE: ${{ steps.plan.outputs.base }}
               LATEST: ${{ steps.plan.outputs.latest }}
            run: bash .github/scripts/fd-rebase.sh
          - uses: ./.github/actions/bun-install
-           if: steps.plan.outputs.release == 'true'
+           if: steps.plan.outputs.mode == 'release'
          - name: Install upstream linux-x64 native addons
-           if: steps.plan.outputs.release == 'true'
+           if: steps.plan.outputs.mode == 'release'
            env:
               LATEST: ${{ steps.plan.outputs.latest }}
            run: |
@@ -85,10 +95,10 @@ jobs:
               curl -fsSL --retry 3 "$(npm view "@oh-my-pi/pi-natives-linux-x64@${LATEST#v}" dist.tarball)" | tar -xz -C "$t"
               cp "$t"/package/pi_natives.linux-x64-*.node packages/natives/native/
          - name: Type check
-           if: steps.plan.outputs.release == 'true'
+           if: steps.plan.outputs.mode == 'release'
            run: bun run check:ts
          - name: FleetDriver patch tests
-           if: steps.plan.outputs.release == 'true'
+           if: steps.plan.outputs.mode == 'release'
            run: |
               set -euo pipefail
               (cd packages/coding-agent && bun test \
@@ -103,24 +113,29 @@ jobs:
    publish:
       name: Release and advance main
       needs: [replay]
-      if: needs.replay.outputs.release == 'true'
+      if: needs.replay.outputs.mode != 'none'
       runs-on: ubuntu-22.04
       timeout-minutes: 120
+      permissions:
+         # Dispatch and watch fd-release.yml; pushes use the deploy key.
+         actions: write
+         contents: read
       env:
-         GH_TOKEN: ${{ secrets.FD_SYNC_TOKEN }}
+         GH_TOKEN: ${{ github.token }}
          LATEST: ${{ needs.replay.outputs.latest }}
+         MODE: ${{ needs.replay.outputs.mode }}
          TESTED_TREE: ${{ needs.replay.outputs.tree }}
+         HAS_KEY: ${{ secrets.FD_SYNC_KEY != '' }}
       steps:
-         - name: Require sync token
+         - name: Require sync key
+           if: env.HAS_KEY != 'true'
            run: |
-              if [ -z "$GH_TOKEN" ]; then
-                echo "::error::FD_SYNC_TOKEN secret is not configured"; exit 1
-              fi
+              echo "::error::FD_SYNC_KEY deploy key secret is not configured"; exit 1
          - uses: actions/checkout@v4
            with:
               ref: main
               fetch-depth: 0
-              token: ${{ secrets.FD_SYNC_TOKEN }}
+              ssh-key: ${{ secrets.FD_SYNC_KEY }}
          - name: Rebuild the tested tree
            run: |
               set -euo pipefail
@@ -132,6 +147,7 @@ jobs:
                 echo "::error::rebased tree differs from the gated tree"; exit 1
               fi
          - name: Push base branch and release
+           if: env.MODE == 'release'
            run: |
               set -euo pipefail
               branch="fd/base-${LATEST#v}"
