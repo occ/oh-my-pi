@@ -1,0 +1,154 @@
+# FleetDriver-maintained fork: follow upstream releases automatically.
+#
+# `main` is always "latest released upstream tag + FleetDriver patches". When
+# upstream publishes a newer stable vX.Y.Z, this workflow rebases the patch
+# queue onto it, gates the result, then publishes vX.Y.Z-fd.1 through
+# fd-release.yml (native linux-x64 + darwin-arm64 build and smoke). `main` only
+# moves after that release succeeds. Intermediate upstream tags are skipped.
+#
+# Any conflict, gate failure, or release failure fails this run and publishes
+# nothing; the next scheduled run retries against the newest upstream tag.
+#
+# Trust boundary: `replay` executes upstream code with a read-only token.
+# `publish` holds FD_SYNC_TOKEN and runs only git/gh. FD_SYNC_TOKEN is a
+# fine-grained PAT for this repository (Contents, Workflows, Actions: write):
+# GITHUB_TOKEN cannot push commits that touch .github/workflows.
+name: FleetDriver upstream sync
+
+on:
+   schedule:
+      - cron: "17 */6 * * *"
+   workflow_dispatch: {}
+
+concurrency:
+   group: fd-sync
+   cancel-in-progress: false
+
+permissions:
+   contents: read
+
+env:
+   UPSTREAM: https://github.com/can1357/oh-my-pi.git
+
+jobs:
+   replay:
+      name: Replay patches and gate
+      runs-on: ubuntu-22.04
+      timeout-minutes: 45
+      outputs:
+         release: ${{ steps.plan.outputs.release }}
+         latest: ${{ steps.plan.outputs.latest }}
+         tree: ${{ steps.rebase.outputs.tree }}
+      steps:
+         - uses: actions/checkout@v4
+           with:
+              ref: main
+              fetch-depth: 0
+              persist-credentials: false
+         - name: Plan
+           id: plan
+           env:
+              GH_TOKEN: ${{ github.token }}
+           run: |
+              set -euo pipefail
+              git fetch -q --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
+              latest="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+              base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)"
+              tag="$latest-fd.1"
+              release=true
+              if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+                echo "$tag already released; nothing to do"
+                release=false
+              elif ! npm view "@oh-my-pi/pi-natives-linux-x64@${latest#v}" version >/dev/null 2>&1; then
+                # Upstream publishes its native leaves after tagging; retry next run.
+                echo "::notice::native addons for $latest are not on npm yet; retrying later"
+                release=false
+              fi
+              echo "base=$base latest=$latest release=$release"
+              { echo "base=$base"; echo "latest=$latest"; echo "release=$release"; } >> "$GITHUB_OUTPUT"
+         - name: Rebase patch queue
+           id: rebase
+           if: steps.plan.outputs.release == 'true'
+           env:
+              BASE: ${{ steps.plan.outputs.base }}
+              LATEST: ${{ steps.plan.outputs.latest }}
+           run: bash .github/scripts/fd-rebase.sh
+         - uses: ./.github/actions/bun-install
+           if: steps.plan.outputs.release == 'true'
+         - name: Install upstream linux-x64 native addons
+           if: steps.plan.outputs.release == 'true'
+           env:
+              LATEST: ${{ steps.plan.outputs.latest }}
+           run: |
+              set -euo pipefail
+              t="$(mktemp -d)"
+              curl -fsSL --retry 3 "$(npm view "@oh-my-pi/pi-natives-linux-x64@${LATEST#v}" dist.tarball)" | tar -xz -C "$t"
+              cp "$t"/package/pi_natives.linux-x64-*.node packages/natives/native/
+         - name: Type check
+           if: steps.plan.outputs.release == 'true'
+           run: bun run check:ts
+         - name: FleetDriver patch tests
+           if: steps.plan.outputs.release == 'true'
+           run: |
+              set -euo pipefail
+              (cd packages/coding-agent && bun test \
+                test/task/task-cache-lanes.test.ts \
+                test/task/executor-result-acceptance.test.ts \
+                test/modes/controllers/tan-command-controller.test.ts \
+                test/advisor-provider-options-parity.test.ts \
+                test/sdk-subagent-auth-inheritance.test.ts \
+                test/config/model-registry.test.ts)
+              (cd packages/ai && bun test test/openai-completions-cache-affinity.test.ts)
+
+   publish:
+      name: Release and advance main
+      needs: [replay]
+      if: needs.replay.outputs.release == 'true'
+      runs-on: ubuntu-22.04
+      timeout-minutes: 120
+      env:
+         GH_TOKEN: ${{ secrets.FD_SYNC_TOKEN }}
+         LATEST: ${{ needs.replay.outputs.latest }}
+         TESTED_TREE: ${{ needs.replay.outputs.tree }}
+      steps:
+         - name: Require sync token
+           run: |
+              if [ -z "$GH_TOKEN" ]; then
+                echo "::error::FD_SYNC_TOKEN secret is not configured"; exit 1
+              fi
+         - uses: actions/checkout@v4
+           with:
+              ref: main
+              fetch-depth: 0
+              token: ${{ secrets.FD_SYNC_TOKEN }}
+         - name: Rebuild the tested tree
+           run: |
+              set -euo pipefail
+              echo "MAIN_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+              git fetch -q --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
+              BASE="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)" \
+                bash .github/scripts/fd-rebase.sh
+              if [ "$(git rev-parse 'HEAD^{tree}')" != "$TESTED_TREE" ]; then
+                echo "::error::rebased tree differs from the gated tree"; exit 1
+              fi
+         - name: Push base branch and release
+           run: |
+              set -euo pipefail
+              branch="fd/base-${LATEST#v}"
+              tag="$LATEST-fd.1"
+              git push --force origin "HEAD:refs/heads/$branch"
+              started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              gh workflow run fd-release.yml -R "$GITHUB_REPOSITORY" --ref "$branch" -f tag="$tag"
+              run_id=""
+              for _ in $(seq 1 30); do
+                run_id="$(gh run list -R "$GITHUB_REPOSITORY" --workflow fd-release.yml --branch "$branch" \
+                  --event workflow_dispatch --json databaseId,createdAt \
+                  --jq "[.[] | select(.createdAt >= \"$started\")][0].databaseId // empty")"
+                [ -n "$run_id" ] && break
+                sleep 10
+              done
+              [ -n "$run_id" ] || { echo "::error::release run did not start"; exit 1; }
+              echo "release run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
+              gh run watch "$run_id" -R "$GITHUB_REPOSITORY" --exit-status --interval 60 >/dev/null
+         - name: Advance main
+           run: git push --force-with-lease="main:$MAIN_SHA" origin HEAD:main
