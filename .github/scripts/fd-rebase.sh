@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Rebase the FleetDriver patch queue (BASE..HEAD) onto upstream tag LATEST.
+# Rebase the FleetDriver patch queue onto upstream tag LATEST.
+# The queue is merge-base(HEAD, LATEST)..HEAD, not "nearest tag": upstream has
+# re-pointed release tags, which made `git describe` pick an older tag and
+# replay upstream commits as if they were ours.
 # Patches already present upstream become empty and are dropped by rebase.
 # Used by fd-sync.yml; the gate and publish jobs must produce the same tree.
 set -euo pipefail
 
-: "${BASE:?}" "${LATEST:?}"
+: "${LATEST:?}"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-if [ "$BASE" != "$LATEST" ]; then
-	echo "==> rebasing patches $BASE..HEAD onto $LATEST"
-	if ! git rebase --onto "$LATEST" "$BASE" HEAD; then
+base="$(git merge-base HEAD "$LATEST")"
+if [ "$base" != "$(git rev-parse "$LATEST^{commit}")" ]; then
+	echo "==> rebasing patches $base..HEAD onto $LATEST"
+	git log --oneline "$base..HEAD"
+	if ! git rebase --onto "$LATEST" "$base" HEAD; then
 		git status --short || true
 		git rebase --abort || true
 		echo "::error::FleetDriver patches do not apply cleanly onto $LATEST; rebase manually"
