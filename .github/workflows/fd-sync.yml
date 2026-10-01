@@ -53,7 +53,6 @@ jobs:
               set -euo pipefail
               git fetch -q --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
               latest="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
-              base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)"
               tag="$latest-fd.1"
               mode=release
               tree=""
@@ -74,13 +73,12 @@ jobs:
                 echo "::notice::native addons for $latest are not on npm yet; retrying later"
                 mode=none
               fi
-              echo "base=$base latest=$latest mode=$mode"
-              { echo "base=$base"; echo "latest=$latest"; echo "mode=$mode"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
+              echo "latest=$latest mode=$mode"
+              { echo "latest=$latest"; echo "mode=$mode"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
          - name: Rebase patch queue
            id: rebase
            if: steps.plan.outputs.mode == 'release'
            env:
-              BASE: ${{ steps.plan.outputs.base }}
               LATEST: ${{ steps.plan.outputs.latest }}
            run: bash .github/scripts/fd-rebase.sh
          - uses: ./.github/actions/bun-install
@@ -141,8 +139,7 @@ jobs:
               set -euo pipefail
               echo "MAIN_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
               git fetch -q --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
-              BASE="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)" \
-                bash .github/scripts/fd-rebase.sh
+              bash .github/scripts/fd-rebase.sh
               if [ "$(git rev-parse 'HEAD^{tree}')" != "$TESTED_TREE" ]; then
                 echo "::error::rebased tree differs from the gated tree"; exit 1
               fi
