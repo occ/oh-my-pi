@@ -8,9 +8,10 @@
 #
 # Any conflict, gate failure, or release failure fails this run and publishes
 # nothing; the next scheduled run retries against the newest upstream tag. A
-# conflict needs a human: the job summary names the patch and files, and the
-# manual path is in the header of .github/scripts/fd-rebase.sh. Rebase and gate
-# logic live in .github/scripts so CI and the manual path cannot drift.
+# conflict needs a human: the job summary and the "fd-sync blocked" issue name
+# the patch and files, and the manual path is in the header of
+# .github/scripts/fd-rebase.sh. Rebase, gate, and native-addon logic live in
+# .github/scripts so CI and the manual path cannot drift.
 #
 # Trust boundary: `replay` executes upstream code with a read-only token.
 # `publish` holds the FD_SYNC deploy key and runs only git/gh. A deploy key is
@@ -42,6 +43,8 @@ jobs:
          mode: ${{ steps.plan.outputs.mode }}
          latest: ${{ steps.plan.outputs.latest }}
          tree: ${{ steps.rebase.outputs.tree || steps.plan.outputs.tree }}
+         current: ${{ steps.plan.outputs.current }}
+         report: ${{ steps.rebase.outputs.report }}
       steps:
          - uses: actions/checkout@v4
            with:
@@ -58,6 +61,7 @@ jobs:
               tag="$latest-fd.1"
               mode=release
               tree=""
+              current=false
               if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
                 # A prior run may have released but failed to advance main; heal
                 # it by re-rebasing and pushing main when the tree matches.
@@ -66,6 +70,7 @@ jobs:
                 if git merge-base --is-ancestor "$latest" HEAD; then
                   echo "$tag released and main already follows $latest; nothing to do"
                   mode=none
+                  current=true
                 else
                   echo "$tag released but main has not advanced; healing main"
                   mode=advance
@@ -76,7 +81,7 @@ jobs:
                 mode=none
               fi
               echo "latest=$latest mode=$mode"
-              { echo "latest=$latest"; echo "mode=$mode"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
+              { echo "latest=$latest"; echo "mode=$mode"; echo "tree=$tree"; echo "current=$current"; } >> "$GITHUB_OUTPUT"
          - name: Rebase patch queue
            id: rebase
            if: steps.plan.outputs.mode == 'release'
@@ -147,3 +152,48 @@ jobs:
               gh run watch "$run_id" -R "$GITHUB_REPOSITORY" --exit-status --interval 60 >/dev/null
          - name: Advance main
            run: git push --force-with-lease="main:$MAIN_SHA" origin HEAD:main
+
+   # One open "fd-sync blocked" issue while the fork cannot follow upstream;
+   # creating it notifies repo watchers, later failures only refresh its body.
+   # Closed once main follows the newest release, not on "addons not on npm yet".
+   alert:
+      name: Track sync status
+      needs: [replay, publish]
+      if: ${{ !cancelled() }}
+      runs-on: ubuntu-22.04
+      permissions:
+         issues: write
+      env:
+         GH_TOKEN: ${{ github.token }}
+         GH_REPO: ${{ github.repository }}
+         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+         LATEST: ${{ needs.replay.outputs.latest }}
+         REPORT: ${{ needs.replay.outputs.report }}
+         CURRENT: ${{ needs.replay.outputs.current }}
+         REPLAY: ${{ needs.replay.result }}
+         PUBLISH: ${{ needs.publish.result }}
+      steps:
+         - name: Open, refresh, or close the tracking issue
+           run: |
+              set -euo pipefail
+              title="fd-sync blocked"
+              issue="$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+                --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+              if [ "$REPLAY" = failure ] || [ "$PUBLISH" = failure ]; then
+                body="$(mktemp)"
+                {
+                  echo "FleetDriver upstream sync cannot publish \`${LATEST:-unknown}-fd.1\`."
+                  echo
+                  echo "Latest failed run: $RUN_URL"
+                  echo
+                  if [ -n "$REPORT" ]; then echo "$REPORT"; echo; fi
+                  echo "Closes automatically after the next successful sync."
+                } > "$body"
+                if [ -n "$issue" ]; then
+                  gh issue edit "$issue" --body-file "$body"
+                else
+                  gh issue create --title "$title" --body-file "$body"
+                fi
+              elif [ -n "$issue" ] && { [ "$PUBLISH" = success ] || [ "$CURRENT" = true ]; }; then
+                gh issue close "$issue" --comment "Resolved by $RUN_URL"
+              fi
