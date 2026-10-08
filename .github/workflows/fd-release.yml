@@ -1,11 +1,11 @@
 # FleetDriver-maintained release (-fd.N) for the occ fork.
 #
 # ci.yml's release path depends on upstream's self-hosted omp-kata pool,
-# npm/Homebrew credentials, and the full platform matrix. This workflow
-# reuses the same composite actions and release scripts on GitHub-hosted
-# runners only, for the two platforms FleetDriver consumes: linux-x64 and
-# darwin-arm64. Both addons are built from the dispatched commit, so binary
-# and native addon always share one source tree.
+# npm/Homebrew credentials, and the full platform matrix. This workflow builds
+# on GitHub-hosted runners only, for the two platforms FleetDriver consumes:
+# linux-x64 and darwin-arm64. Native addons are upstream's published ones for
+# the base release (.github/scripts/fd-natives.sh), not a local Bazel build:
+# upstream's internal native CI changes too often to depend on.
 name: FleetDriver release
 
 on:
@@ -70,13 +70,8 @@ jobs:
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
-         # Source-built addons, not npm/artifact downloads: a mismatched addon
-         # is what broke --smoke-test in v18.3.2-fd.1.
-         - name: Build native addons (bazel)
-           uses: ./.github/actions/bazel-natives
-           with:
-              targets: ${{ matrix.native_targets }}
-              cache-scope: fd-release-${{ matrix.target_id }}
+         - name: Install upstream native addons
+           run: bash .github/scripts/fd-natives.sh ${{ matrix.target_id }}
          - name: Build release binary
            env:
               RELEASE_TARGETS: ${{ matrix.target_id }}
@@ -130,7 +125,7 @@ jobs:
               {
                 echo "FleetDriver-maintained OMP release \`$TAG\` built from \`$GITHUB_SHA\`."
                 echo
-                echo "Assets: \`omp-linux-x64\`, \`omp-darwin-arm64\`. Each was built with its native addon from this commit and passed \`--version\` and \`--smoke-test\` on its native GitHub-hosted runner before publication."
+                echo "Assets: \`omp-linux-x64\`, \`omp-darwin-arm64\`. Each embeds upstream's published native addon for its base release and passed \`--version\` and \`--smoke-test\` on its native GitHub-hosted runner before publication."
                 echo
                 if [ "$SIGNED" = true ]; then
                   echo "macOS signing: Developer ID + notarization."
