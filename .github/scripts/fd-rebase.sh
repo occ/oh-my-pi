@@ -40,12 +40,13 @@ if [ -n "${GITHUB_ACTIONS:-}" ]; then
 	git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 fi
 
-# Writes the conflict report to the job summary; locally it goes to stderr.
+# Writes the conflict report to the job summary and the `report` step output
+# (fd-sync's tracking issue); locally it goes to stderr.
 report_conflict() {
-	local stopped files
+	local stopped files report eof
 	stopped="$(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo unknown)"
 	files="$(git diff --name-only --diff-filter=U)"
-	{
+	report="$(
 		echo "### FleetDriver patches conflict with $LATEST"
 		echo
 		echo "Conflicting patch: \`$stopped\`"
@@ -57,7 +58,16 @@ report_conflict() {
 		echo
 		echo "Resolve locally from fork \`main\`: run \`.github/scripts/fd-rebase.sh\`;"
 		echo "the full manual path is in that script's header."
-	} | if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then tee -a "$GITHUB_STEP_SUMMARY"; else cat >&2; fi
+	)"
+	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+		echo "$report" | tee -a "$GITHUB_STEP_SUMMARY"
+	else
+		echo "$report" >&2
+	fi
+	if [ -n "${GITHUB_OUTPUT:-}" ]; then
+		eof="EOF_$(openssl rand -hex 8)"
+		printf 'report<<%s\n%s\n%s\n' "$eof" "$report" "$eof" >> "$GITHUB_OUTPUT"
+	fi
 }
 
 base="$(git merge-base HEAD "$LATEST")"
