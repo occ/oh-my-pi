@@ -7,7 +7,10 @@
 # moves after that release succeeds. Intermediate upstream tags are skipped.
 #
 # Any conflict, gate failure, or release failure fails this run and publishes
-# nothing; the next scheduled run retries against the newest upstream tag.
+# nothing; the next scheduled run retries against the newest upstream tag. A
+# conflict needs a human: the job summary names the patch and files, and the
+# manual path is in the header of .github/scripts/fd-rebase.sh. Rebase and gate
+# logic live in .github/scripts so CI and the manual path cannot drift.
 #
 # Trust boundary: `replay` executes upstream code with a read-only token.
 # `publish` holds the FD_SYNC deploy key and runs only git/gh. A deploy key is
@@ -51,8 +54,7 @@ jobs:
               GH_TOKEN: ${{ github.token }}
            run: |
               set -euo pipefail
-              git fetch -q --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
-              latest="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+              latest="$(bash .github/scripts/fd-rebase.sh --print-latest)"
               tag="$latest-fd.1"
               mode=release
               tree=""
@@ -83,30 +85,11 @@ jobs:
            run: bash .github/scripts/fd-rebase.sh
          - uses: ./.github/actions/bun-install
            if: steps.plan.outputs.mode == 'release'
-         - name: Install upstream linux-x64 native addons
+         - name: Gate
            if: steps.plan.outputs.mode == 'release'
            env:
               LATEST: ${{ steps.plan.outputs.latest }}
-           run: |
-              set -euo pipefail
-              t="$(mktemp -d)"
-              curl -fsSL --retry 3 "$(npm view "@oh-my-pi/pi-natives-linux-x64@${LATEST#v}" dist.tarball)" | tar -xz -C "$t"
-              cp "$t"/package/pi_natives.linux-x64-*.node packages/natives/native/
-         - name: Type check
-           if: steps.plan.outputs.mode == 'release'
-           run: bun run check:ts
-         - name: FleetDriver patch tests
-           if: steps.plan.outputs.mode == 'release'
-           run: |
-              set -euo pipefail
-              (cd packages/coding-agent && bun test \
-                test/task/task-cache-lanes.test.ts \
-                test/task/executor-result-acceptance.test.ts \
-                test/modes/controllers/tan-command-controller.test.ts \
-                test/advisor-provider-options-parity.test.ts \
-                test/sdk-subagent-auth-inheritance.test.ts \
-                test/config/model-registry.test.ts)
-              (cd packages/ai && bun test test/openai-completions-cache-affinity.test.ts)
+           run: bash .github/scripts/fd-gate.sh
 
    publish:
       name: Release and advance main
@@ -138,7 +121,6 @@ jobs:
            run: |
               set -euo pipefail
               echo "MAIN_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-              git fetch -q --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
               bash .github/scripts/fd-rebase.sh
               if [ "$(git rev-parse 'HEAD^{tree}')" != "$TESTED_TREE" ]; then
                 echo "::error::rebased tree differs from the gated tree"; exit 1
