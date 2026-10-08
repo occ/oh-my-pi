@@ -11,9 +11,7 @@ if ! git merge-base --is-ancestor "$LATEST" HEAD; then
 	exit 1
 fi
 
-t="$(mktemp -d)"
-curl -fsSL --retry 3 "$(npm view "@oh-my-pi/pi-natives-linux-x64@${LATEST#v}" dist.tarball)" | tar -xz -C "$t"
-cp "$t"/package/pi_natives.linux-x64-*.node packages/natives/native/
+bash "$(dirname "$0")/fd-natives.sh" linux-x64
 
 bun run check:ts
 
