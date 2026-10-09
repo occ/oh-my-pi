@@ -54,6 +54,12 @@ export function applyInferenceHeaders(headers: Record<string, string>, options: 
 		setHeaderIfAbsent(headers, "User-Agent", USER_AGENT);
 		setHeader(headers, "x-opencode-session", sessionId);
 	}
+
+	// LiteLLM's highest-priority session header on every route; without it the
+	// proxy logs each request as its own session.
+	if (options.provider === "litellm") {
+		setHeader(headers, "x-litellm-session-id", sessionId);
+	}
 }
 
 function isHeaderRecord(headers: RequestInit["headers"]): headers is Record<string, string> {
