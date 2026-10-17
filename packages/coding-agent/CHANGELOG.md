@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Rebased FleetDriver prompt-cache lanes onto upstream 18.11.3, preserving task
+  cache policy, background tool presentation, and subagent artifact cleanup
+  alongside cache-lane release.
+
 ## [18.11.3] - 2026-10-16
 
 ### Breaking Changes
