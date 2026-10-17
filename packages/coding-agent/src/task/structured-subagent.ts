@@ -831,7 +831,6 @@ function buildExecutorOptions(
 		maxRuntimeMs: request.maxRuntimeMs,
 		restrictToolNames,
 		keepAlive: request.keepAlive,
-		onRelease: request.onRelease,
 		onPromptCacheLaneReleased: request.onPromptCacheLaneReleased,
 		signal: request.signal,
 		eventBus: session.eventBus,
@@ -873,10 +872,14 @@ function buildExecutorOptions(
 		onRelease:
 			preparedSession !== undefined && lease.temporary
 				? async () => {
-						await fs.rm(lease.artifactsDir, { recursive: true, force: true });
-						lease.unregister?.();
+						try {
+							await fs.rm(lease.artifactsDir, { recursive: true, force: true });
+							lease.unregister?.();
+						} finally {
+							await request.onRelease?.();
+						}
 					}
-				: undefined,
+				: request.onRelease,
 		parentTelemetry: session.getTelemetry?.(),
 		parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 		parentPromptCacheKey: session.getPromptCacheKey?.(),
