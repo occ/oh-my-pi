@@ -106,6 +106,8 @@ async function runKeptAliveSubagent(): Promise<{ release(): void; close(): void 
 	// ~/.omp and load the developer's installed plugins as project plugins.
 	const cwd = path.join(root, "home", "work");
 	const artifactsDir = path.join(root, "artifacts");
+	const additionalDirectory = path.join(root, "home", "extra");
+	await fs.mkdir(additionalDirectory, { recursive: true });
 	await fs.mkdir(cwd, { recursive: true });
 	await fs.mkdir(artifactsDir, { recursive: true });
 
@@ -125,6 +127,7 @@ async function runKeptAliveSubagent(): Promise<{ release(): void; close(): void 
 	try {
 		const result = await runSubprocess({
 			cwd,
+			additionalDirectories: [additionalDirectory],
 			artifactsDir,
 			agent: { name: "task", description: "test", systemPrompt: "test", tools: ["read"], source: "bundled" },
 			task: "report done",
@@ -194,6 +197,8 @@ it("parks without retaining the run's settings overlay and revives with the sett
 
 		const revived = await AgentLifecycleManager.global().ensureLive(AGENT_ID);
 		expect(cfgContextPromotionEnabled.get(revived)).toBe(true);
+		expect(revived.sessionManager.getCwd()).toBe(path.join(root, "home", "work"));
+		expect(revived.sessionManager.getAdditionalDirectories()).toEqual([path.join(root, "home", "extra")]);
 	} finally {
 		run.close();
 	}

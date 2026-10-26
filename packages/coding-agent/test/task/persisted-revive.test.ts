@@ -158,9 +158,11 @@ async function createPersistedSession(
 		isolated?: boolean;
 		retryFallback?: RetryFallbackRole;
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
+		additionalDirectories?: string[];
 	},
 ): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
+	for (const root of contract?.additionalDirectories ?? []) await manager.addWorkspaceDirectory(root);
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
 	manager.appendSessionInit({
@@ -486,6 +488,35 @@ describe("persisted subagent revival", () => {
 
 		expect(capturedOptions?.toolNames).toEqual(["read", "yield"]);
 		expect(activeToolNames).toEqual([["read", "yield"]]);
+	});
+
+	it("cold-revives the persisted child checkout and roots rather than the current parent checkout", async () => {
+		const parentCwd = makeTempDir("@pi-revive-parent-");
+		const childCwd = makeTempDir("@pi-revive-child-");
+		const extra = makeTempDir("@pi-revive-extra-");
+		const sessionFile = await createPersistedSession(childCwd, undefined, undefined, undefined, {
+			additionalDirectories: [extra],
+		});
+		let captured: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			captured = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+		const ref = createRef(sessionFile);
+		const roots: EffectiveExtensionRoots = {
+			explicit: [path.join(parentCwd, "explicit.ts")],
+			mode: "explicit-only",
+			configured: [],
+			configuredLevel: "user",
+		};
+		const reviver = await createFactory(parentCwd, undefined, { extensionRoots: () => roots })(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+		expect(captured?.cwd).toBe(childCwd);
+		expect(captured?.additionalDirectories).toEqual([extra]);
+		expect(captured?.workspaceBound).toBe(true);
+		expect(captured?.preloadedPreparedExtensions).toBeUndefined();
+		expect(captured?.extensionRoots?.()).toEqual(roots);
 	});
 
 	it("preserves explicitly writable cold-revival contracts", async () => {

@@ -39,9 +39,8 @@ async function canonicalWritePath(absolutePath: string): Promise<string | undefi
 
 /** True when `absolutePath` resolves inside `root` (== root or under it). */
 function isWithinRoot(absolutePath: string, root: string): boolean {
-	if (absolutePath === root) return true;
-	const sep = `${root}${path.sep}`;
-	return absolutePath.startsWith(sep);
+	const relative = path.relative(root, absolutePath);
+	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /** Strip the hashline `[path#TAG]` wrapper from a write/edit target so the inner
@@ -120,6 +119,47 @@ export async function resolvePlanPath(session: ToolSession, targetPath: string, 
 	return resolveToCwd(normalized, session.cwd);
 }
 
+/** Delegated filesystem targets must land in the bound workspace or session scratch. */
+export async function enforceWorkspaceWrite(
+	session: ToolSession,
+	targetPath: string,
+	options?: { move?: string; op?: "create" | "update" | "delete"; signal?: AbortSignal },
+): Promise<void> {
+	if (!session.workspaceBound) return;
+	if (options?.move) await enforceWorkspaceWrite(session, options.move, { signal: options.signal });
+	const router = InternalUrlRouter.instance();
+	const normalized = router.normalize(unwrapHashlineHeaderPath(targetPath));
+	// Handler/device writes have protocol-specific authorization, not a filesystem destination.
+	const target = router.writeTarget(normalized);
+	if (target?.spec.write?.via === "handler") return;
+	const resolved = await resolvePlanPath(session, normalized, options?.signal);
+	await enforceWorkspacePath(session, resolved, options?.signal);
+}
+
+/** Guard an explicit filesystem cwd without attempting to parse arbitrary shell commands. */
+export async function enforceWorkspacePath(
+	session: ToolSession,
+	absolutePath: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (!session.workspaceBound) return;
+	const target = await canonicalWritePath(path.resolve(absolutePath));
+	const roots = [
+		session.cwd,
+		...(session.additionalDirectories ?? []),
+		...InternalUrlRouter.instance().sandboxRoots(sessionResolveContext(session, { signal })),
+	];
+	if (target !== undefined) {
+		for (const root of roots) {
+			const realRoot = await canonicalWritePath(resolveToCwd(root, session.cwd));
+			if (realRoot !== undefined && isWithinRoot(target, realRoot)) return;
+		}
+	}
+	throw new ToolError(
+		`Delegated workspace: '${absolutePath}' is outside the bound workspace roots or cannot be safely resolved. Declare an additional workspace directory when launching the task if access is intended.`,
+	);
+}
+
 /**
  * Plan mode keeps the working tree read-only while letting the agent draft its
  * plan. Writes and edits to the `local://` artifact sandbox are allowed (that is
@@ -131,6 +171,7 @@ export async function enforcePlanModeWrite(
 	targetPath: string,
 	options?: { move?: string; op?: "create" | "update" | "delete"; signal?: AbortSignal },
 ): Promise<void> {
+	await enforceWorkspaceWrite(session, targetPath, options);
 	const state = session.getPlanModeState?.();
 	if (!state?.enabled) return;
 

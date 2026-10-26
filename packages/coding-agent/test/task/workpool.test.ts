@@ -22,6 +22,7 @@ const AGENT: AgentDefinition = {
 };
 
 const POLICY = {
+	workspace: { cwd: "/tmp", additionalDirectories: [], changed: false },
 	discovery: { agents: [AGENT], projectAgentsDir: null },
 	agentName: "scout",
 	agent: AGENT,

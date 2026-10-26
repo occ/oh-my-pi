@@ -32,6 +32,8 @@ import type { TaskEffort } from "@oh-my-pi/pi-tui/thinking";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
+import { enforceWorkspacePath } from "../tools/plan-mode-guard";
+import { rebaseSubagentExtensionRoots } from "./workspace-policy";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
@@ -107,6 +109,10 @@ export interface StructuredSubagentIdentity {
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
 	session: ToolSession;
+	/** Child checkout, resolved relative to the parent cwd. */
+	cwd?: string;
+	/** Additional roots, resolved relative to the child cwd. */
+	additionalDirectories?: string[];
 	invocationKind: "task" | "eval";
 	assignment: string;
 	context?: string;
@@ -173,6 +179,12 @@ export interface StructuredSubagentRequest {
 
 /** A normalized preflight result, reusable by tests and adapters. */
 export interface EffectiveSubagentPolicy {
+	workspace: {
+		cwd: string;
+		additionalDirectories: string[];
+		changed: boolean;
+		extensionRoots?: EffectiveExtensionRoots;
+	};
 	discovery: DiscoveryResult;
 	agentName: string;
 	agent: AgentDefinition;
@@ -348,6 +360,63 @@ function discoverAgentsShared(cwd: string, extensionRoots?: EffectiveExtensionRo
 	return promise;
 }
 
+async function resolveSubagentWorkspace(
+	request: StructuredSubagentRequest,
+): Promise<EffectiveSubagentPolicy["workspace"]> {
+	const canonicalDirectory = async (value: string, base: string, field: string): Promise<string> => {
+		if (typeof value !== "string" || value.trim() === "") {
+			throw new StructuredSubagentError("preflight", `${field} must be a non-empty directory path.`);
+		}
+		const resolved = path.resolve(base, value);
+		try {
+			const canonical = await fs.realpath(resolved);
+			if (!(await fs.stat(canonical)).isDirectory()) throw new Error("not a directory");
+			return canonical;
+		} catch (error) {
+			throw new StructuredSubagentError("preflight", `${field} must name an existing directory: ${resolved}`, {
+				cause: error,
+			});
+		}
+	};
+	const parentCwd = await canonicalDirectory(request.session.cwd, request.session.cwd, "Parent cwd");
+	const cwd = request.cwd === undefined ? parentCwd : await canonicalDirectory(request.cwd, parentCwd, "cwd");
+	const roots =
+		request.additionalDirectories ?? (request.cwd === undefined ? (request.session.additionalDirectories ?? []) : []);
+	if (!Array.isArray(roots)) {
+		throw new StructuredSubagentError("preflight", "additionalDirectories must be an array of directory paths.");
+	}
+	const inherited = request.additionalDirectories === undefined && request.cwd === undefined;
+	const canonicalRoots = await Promise.all(
+		roots.map(async (root, index) => {
+			try {
+				return await canonicalDirectory(root, cwd, `additionalDirectories[${index}]`);
+			} catch (error) {
+				const cause = error instanceof Error ? error.cause : undefined;
+				if (inherited && typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT")
+					return undefined;
+				throw error;
+			}
+		}),
+	);
+	const additionalDirectories = [
+		...new Set(canonicalRoots.filter((root): root is string => root !== undefined && root !== cwd)),
+	];
+	try {
+		await enforceWorkspacePath(request.session, cwd, request.signal);
+		for (const root of additionalDirectories) await enforceWorkspacePath(request.session, root, request.signal);
+	} catch (error) {
+		throw new StructuredSubagentError("preflight", error instanceof Error ? error.message : String(error), {
+			cause: error,
+		});
+	}
+	const changed = cwd !== parentCwd;
+	const parentRoots = request.session.effectiveExtensionRoots?.();
+	const extensionRoots = changed
+		? await rebaseSubagentExtensionRoots(parentRoots, request.session.settings, parentCwd, cwd)
+		: parentRoots;
+	return { cwd, additionalDirectories, changed, extensionRoots };
+}
+
 /**
  * Resolve every policy shared by task and eval before allocating artifacts or
  * dispatching work. Callers translate {@link StructuredSubagentError} into
@@ -362,8 +431,9 @@ export async function resolveEffectiveSubagentPolicy(
 	const planMode = request.session.getPlanModeState?.()?.enabled === true;
 	if (agentName !== SEANCE_AGENT_NAME) assertPlanControlsAllowed(request, planMode);
 	assertDepthAndSpawnAllowed(request, agentName);
+	const workspace = await resolveSubagentWorkspace(request);
 
-	const discovery = await discoverAgentsShared(request.session.cwd, request.session.effectiveExtensionRoots?.());
+	const discovery = await discoverAgentsShared(workspace.cwd, workspace.extensionRoots);
 	const agents = [...discovery.agents, ...(request.session.getSessionAgents?.() ?? [])];
 	const agent = getAgent(agents, agentName);
 	if (!agent) {
@@ -457,6 +527,7 @@ export async function resolveEffectiveSubagentPolicy(
 		);
 	}
 	return {
+		workspace,
 		discovery,
 		agentName,
 		agent,
@@ -591,13 +662,13 @@ function buildExecutorOptions(
 ): ExecutorOptions {
 	const { session } = request;
 	const preparedSession = policy.preparedSession;
-	const { skills, autoloadSkills } = resolveAutoloadSkills(session, policy.agent);
+	const { skills, autoloadSkills } = policy.workspace.changed ? {} : resolveAutoloadSkills(session, policy.agent);
 	const localProtocolOptions = sessionLocalProtocolOptions(session);
 	const restrictToolNames = preparedSession !== undefined || policy.planMode || session.restrictToolNames === true;
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
-		cwd: session.cwd,
-		additionalDirectories: session.additionalDirectories,
+		cwd: policy.workspace.cwd,
+		additionalDirectories: policy.workspace.additionalDirectories,
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		providerPromptCacheKey: request.providerPromptCacheKey,
@@ -659,20 +730,28 @@ function buildExecutorOptions(
 		enableMCP,
 		customTools: request.customTools,
 		workPoolYieldItems: request.workPoolYieldItems,
-		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
+		contextFiles: policy.workspace.changed
+			? undefined
+			: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
 		skills,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession ? undefined : autoloadSkills,
-		workspaceTree: session.workspaceTree,
-		promptTemplates: session.promptTemplates,
-		rules: session.rules,
+		autoloadSkillNames:
+			preparedSession || (!policy.workspace.changed && !policy.isIsolated) ? undefined : policy.agent.autoloadSkills,
+		workspaceTree: policy.workspace.changed ? undefined : session.workspaceTree,
+		promptTemplates: policy.workspace.changed ? undefined : session.promptTemplates,
+		rules: policy.workspace.changed ? undefined : session.rules,
 		// Root policy and module paths have separate jobs: the live policy drives
 		// recursive sub-discovery; preloaded paths only avoid re-scanning/reusing
 		// parent-bound extension instances while constructing the child.
-		extensionRoots: session.effectiveExtensionRoots?.bind(session),
-		preloadedExtensionPaths: restrictToolNames ? [] : session.extensionPaths,
-		preloadedPreparedExtensions: session.preparedExtensions,
-		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
+		extensionRoots: policy.workspace.changed
+			? policy.workspace.extensionRoots
+				? () => policy.workspace.extensionRoots!
+				: undefined
+			: session.effectiveExtensionRoots?.bind(session),
+		preloadedExtensionPaths: restrictToolNames ? [] : policy.workspace.changed ? undefined : session.extensionPaths,
+		preloadedPreparedExtensions: policy.workspace.changed ? undefined : session.preparedExtensions,
+		preloadedCustomToolPaths: restrictToolNames ? [] : policy.workspace.changed ? undefined : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: preparedSession ? undefined : (session.getArtifactManager?.() ?? undefined),
 		parentHindsightSessionState: session.getHindsightSessionState?.(),
@@ -857,7 +936,8 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			...request.identity,
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
-		if (policy.preparedSession === undefined) await refreshSkillsForAutoload(request.session, policy.agent);
+		if (policy.preparedSession === undefined && !policy.workspace.changed)
+			await refreshSkillsForAutoload(request.session, policy.agent);
 		const baseOptions = buildExecutorOptions(request, policy, lease, id);
 		baseOptions.onCleanupDeferred = completion => {
 			deferredCleanup = completion;
@@ -866,7 +946,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		let isolationContext: IsolationContext | null = null;
 		if (policy.isIsolated) {
 			try {
-				isolationContext = await prepareIsolationContext(request.session.cwd);
+				isolationContext = await prepareIsolationContext(policy.workspace.cwd);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				throw new StructuredSubagentError(

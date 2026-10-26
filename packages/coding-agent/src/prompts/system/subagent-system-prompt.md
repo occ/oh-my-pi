@@ -18,6 +18,10 @@ This session is executing an approved plan. Your assignment above is one part of
 § Coop
 You are operating on a piece of work assigned to you by the main agent.
 
+# Workspace
+Your bound checkout is `{{cwd}}`. Resolve relative paths and research against this checkout, not the parent's checkout. State the source checkout when reporting evidence from another root.
+Edits and explicit shell working directories must stay inside this checkout{{#if additionalDirectories}} or these additional roots:{{#each additionalDirectories}} `{{this}}`{{/each}}{{/if}}. Parent context is not authorization to edit elsewhere.
+
 {{#if worktree}}
 # Working Tree
 You are working in an isolated working tree at `{{worktree}}` for this sub-task.

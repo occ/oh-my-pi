@@ -6500,6 +6500,11 @@ describe("agentLoop passive additionalContext", () => {
 		expect(executed).toEqual([]);
 		const toolEnd = events.find(e => e.type === "tool_execution_end");
 		expect(toolEnd?.type === "tool_execution_end" && toolEnd.isError).toBe(true);
+		if (toolEnd?.type !== "tool_execution_end") throw new Error("Missing rejected hook result");
+		expect(toolEnd.result.details).not.toHaveProperty("toolArgumentRejection");
+		expect(JSON.stringify(toolEnd.result.content)).toContain(
+			"beforeToolCall hook supplied invalid revised arguments",
+		);
 	});
 
 	it("afterToolCall overrides content and isError on the emitted tool result", async () => {

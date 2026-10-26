@@ -21,16 +21,16 @@ export interface ToolCallLoopTurn {
 
 /** Details needed to steer the model away from a repeated tool call. */
 export interface RepeatedToolCallDetection {
-	readonly kind: "repeated_tool_call";
+	readonly kind: "repeated_tool_call" | "repeated_tool_argument_rejection";
 	readonly toolName: string;
 	readonly count: number;
 	readonly resultSummary: string;
 	readonly argumentsSummary: string;
 }
 
-function canonicalizeToolCallValue(value: unknown): unknown {
+function canonicalizeToolCallValue(value: unknown, omitIntent = true): unknown {
 	if (Array.isArray(value)) {
-		return value.map(item => canonicalizeToolCallValue(item));
+		return value.map(item => canonicalizeToolCallValue(item, omitIntent));
 	}
 	if (!value || typeof value !== "object") {
 		return value;
@@ -39,10 +39,16 @@ function canonicalizeToolCallValue(value: unknown): unknown {
 	const input = value as Record<string, unknown>;
 	const output: Record<string, unknown> = {};
 	for (const key of Object.keys(input).sort()) {
-		if (key === INTENT_FIELD || key === LEGACY_INTENT_FIELD) continue;
-		output[key] = canonicalizeToolCallValue(input[key]);
+		if (omitIntent && (key === INTENT_FIELD || key === LEGACY_INTENT_FIELD)) continue;
+		output[key] = canonicalizeToolCallValue(input[key], omitIntent);
 	}
 	return output;
+}
+
+/** Opaque identity for rejected validator input; never includes argument values in diagnostics. */
+export function toolArgumentFingerprint(args: unknown): string {
+	const serialized = JSON.stringify(canonicalizeToolCallValue(args, false)) ?? "undefined";
+	return new Bun.CryptoHasher("sha256").update(serialized).digest("hex");
 }
 
 function summarizeText(text: string, limit: number): string {
@@ -72,15 +78,61 @@ export class ToolCallLoopGuard {
 	#exemptTools: ReadonlySet<string>;
 	#lastHash: string | undefined;
 	#count = 0;
+	#rejections = new Map<string, number>();
 
 	constructor(options: ToolCallLoopGuardOptions) {
 		this.#threshold = Math.max(1, Math.trunc(options.threshold));
 		this.#exemptTools = new Set(options.exemptTools);
 	}
 
+	/** Starts a new user prompt without carrying failed attempts into it. */
+	reset(): void {
+		this.#lastHash = undefined;
+		this.#count = 0;
+		this.#rejections.clear();
+	}
+
+	#recordRejections(turn: ToolCallLoopTurn, toolCalls: readonly ToolCall[]): RepeatedToolCallDetection | null {
+		let detection: RepeatedToolCallDetection | null = null;
+		const counted = new Set<string>();
+		for (const call of toolCalls) {
+			const result = turn.toolResults.find(candidate => candidate.toolCallId === call.id);
+			const details = result?.details;
+			const rejected =
+				result?.isError === true &&
+				details !== null &&
+				typeof details === "object" &&
+				"toolArgumentRejection" in details &&
+				details.toolArgumentRejection === true;
+			if (!rejected) continue;
+			const fingerprint =
+				"toolArgumentFingerprint" in details && typeof details.toolArgumentFingerprint === "string"
+					? details.toolArgumentFingerprint
+					: toolArgumentFingerprint(call.arguments);
+			const key = JSON.stringify([call.name, fingerprint]);
+			// A malformed fan-out is one attempt, not one retry per child.
+			if (counted.has(key)) continue;
+			counted.add(key);
+			const count = (this.#rejections.get(key) ?? 0) + 1;
+			this.#rejections.set(key, count);
+			if (count >= this.#threshold) {
+				detection = {
+					kind: "repeated_tool_argument_rejection",
+					toolName: call.name,
+					count,
+					resultSummary: summarizeToolResult(turn.toolResults, call.id),
+					argumentsSummary: "[arguments omitted: rejected before execution]",
+				};
+			}
+		}
+		return detection;
+	}
+
 	/** Records one completed turn and reports repetitions at or beyond the threshold. */
 	recordTurn(turn: ToolCallLoopTurn): RepeatedToolCallDetection | null {
 		const toolCalls = turn.message.content.filter((part): part is ToolCall => part.type === "toolCall");
+		const rejection = this.#recordRejections(turn, toolCalls);
+		if (rejection) return rejection;
 		if (toolCalls.length === 0) {
 			this.#lastHash = undefined;
 			this.#count = 0;

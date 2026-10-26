@@ -37,9 +37,16 @@ describe("eval js agent() handle", () => {
 		});
 		const handle = (await (sandbox.agent as AgentHelper)("say hi", {
 			label: "Greeter",
+			cwd: "/checkout",
+			additionalDirectories: ["/extra"],
 		})) as Record<string, unknown>;
 		expect(seenName).toBe("__agent__");
-		expect(seenArgs).toEqual({ prompt: "say hi", label: "Greeter" });
+		expect(seenArgs).toEqual({
+			prompt: "say hi",
+			label: "Greeter",
+			cwd: "/checkout",
+			additionalDirectories: ["/extra"],
+		});
 		expect(handle.kind).toBe("agent");
 		expect(handle.id).toBe("abc123");
 		expect(handle.agent).toBe("task");

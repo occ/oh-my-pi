@@ -1844,6 +1844,8 @@ export interface EditPolicy {
   urlAliasSchemes: Array<string>
   /** Plain-path roots writable in plan mode. */
   planWritableRoots: Array<string>
+  /** Physical roots writable by a workspace-bound session; absent means unrestricted. */
+  workspaceWritableRoots?: Array<string>
   homeDir: string
   /** The payload is a verbatim custom-format string, not JSON. */
   rawInput: boolean

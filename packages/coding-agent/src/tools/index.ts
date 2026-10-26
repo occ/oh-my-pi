@@ -211,6 +211,8 @@ export interface ToolSession {
 	cwd: string;
 	/** Additional workspace directories beyond cwd (multi-root), forwarded to subagents. */
 	additionalDirectories?: string[];
+	/** Delegated sessions guard filesystem mutations and explicit shell cwd against these workspace roots. */
+	workspaceBound?: boolean;
 	/** Whether UI is available */
 	hasUI: boolean;
 	/** Whether `ask` can reach a human. Defaults to `hasUI`. */

@@ -110,6 +110,7 @@ import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "./workpool-yield";
+import { rebaseSubagentExtensionRoots } from "./workspace-policy";
 import {
 	type AgentDefinition,
 	MAX_OUTPUT_BYTES,
@@ -579,6 +580,8 @@ export interface ExecutorOptions {
 	parentTelemetry?: AgentTelemetryConfig;
 	/** Skills to autoload via sendCustomMessage before the first prompt */
 	autoloadSkills?: Skill[];
+	/** Resolve agent-declared autoload names against the child's discovered skills. */
+	autoloadSkillNames?: readonly string[];
 	/**
 	 * Registry id of the spawning agent, recorded as this subagent's parent.
 	 * Forwarded verbatim to the SDK; the executor never derives it (the spawner
@@ -3862,6 +3865,8 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 /** Inputs of a subagent's rendered system prompt, fixed at spawn. */
 interface SubagentPromptInputs {
 	id: string;
+	cwd: string;
+	additionalDirectories: string[];
 	model?: string;
 	agentSystemPrompt: string;
 	context: string;
@@ -3948,6 +3953,8 @@ function buildSubagentSessionOptions(
 						: undefined;
 			const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
 				agent: inputs.agentSystemPrompt,
+				cwd: inputs.cwd,
+				additionalDirectories: inputs.additionalDirectories,
 				context: inputs.context,
 				planReference: inputs.planReference,
 				planReferencePath: inputs.planReferencePath,
@@ -4514,6 +4521,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
+			const extensionRoots = options.extensionRoots?.();
+			const childExtensionRoots =
+				worktree !== undefined
+					? await rebaseSubagentExtensionRoots(extensionRoots, settings, cwd, effectiveCwd)
+					: extensionRoots;
 			const fork = preparedSession?.fork;
 			if (fork && !subtaskSessionFile) {
 				throw new Error("The prepared session fork requires a persisted child session file.");
@@ -4621,7 +4633,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							? undefined
 							: `${options.parentPromptCacheKey}:${agent.name}`,
 					cwd: effectiveCwd,
-					additionalDirectories: worktree !== undefined ? undefined : options.additionalDirectories,
+					workspaceBound: true,
+					additionalDirectories: worktree !== undefined ? [] : options.additionalDirectories,
 					authStorage,
 					modelRegistry,
 					getApiKey: options.getApiKey,
@@ -4647,15 +4660,28 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					outputSchemaMode: options.outputSchemaMode,
 					restrictToolNames,
 					requireYieldTool: structured,
-					contextFiles: options.contextFiles,
-					skills: options.skills,
-					promptTemplates: options.promptTemplates,
-					workspaceTree: options.workspaceTree,
-					rules: options.rules,
-					extensionRoots: options.extensionRoots,
-					preloadedExtensionPaths: restrictToolNames ? [] : options.preloadedExtensionPaths,
-					preloadedPreparedExtensions: options.preloadedPreparedExtensions,
-					preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
+					contextFiles: worktree !== undefined ? undefined : options.contextFiles,
+					skills: worktree !== undefined ? undefined : options.skills,
+					promptTemplates: worktree !== undefined ? undefined : options.promptTemplates,
+					workspaceTree: worktree !== undefined ? undefined : options.workspaceTree,
+					rules: worktree !== undefined ? undefined : options.rules,
+					extensionRoots:
+						worktree !== undefined
+							? childExtensionRoots
+								? () => childExtensionRoots
+								: undefined
+							: options.extensionRoots,
+					preloadedExtensionPaths: restrictToolNames
+						? []
+						: worktree !== undefined
+							? undefined
+							: options.preloadedExtensionPaths,
+					preloadedPreparedExtensions: worktree !== undefined ? undefined : options.preloadedPreparedExtensions,
+					preloadedCustomToolPaths: restrictToolNames
+						? []
+						: worktree !== undefined
+							? undefined
+							: options.preloadedCustomToolPaths,
 					hasUI: false,
 					prewalk,
 					spawns: spawnsEnv,
@@ -4687,6 +4713,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				preparedSession: preparedSession ? { promptSuffix: preparedSession.promptSuffix } : undefined,
 				prompt: {
 					id,
+					cwd: effectiveCwd,
+					additionalDirectories:
+						worktree !== undefined || preparedSession ? [] : (options.additionalDirectories ?? []),
 					model: progress.resolvedModel,
 					agentSystemPrompt: agent.systemPrompt,
 					context: options.context?.trim() ?? "",
@@ -4902,8 +4931,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			checkAbort();
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
-			if (options.autoloadSkills?.length) {
-				for (const skill of options.autoloadSkills) {
+			const autoloadSkills =
+				options.autoloadSkillNames === undefined
+					? (options.autoloadSkills ?? [])
+					: options.autoloadSkillNames
+							.map(name => session.skills.find(skill => skill.name === name))
+							.filter(skill => skill !== undefined);
+			if (autoloadSkills.length) {
+				for (const skill of autoloadSkills) {
 					const { message } = await buildSkillPromptMessage(skill, { args: "" }, "autoload");
 					await session.sendCustomMessage(
 						{

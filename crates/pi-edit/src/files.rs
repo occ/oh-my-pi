@@ -191,6 +191,11 @@ impl FileCache {
 		self.unresolved.clear();
 	}
 
+	/// Authorize a staged physical target before any writes begin.
+	pub fn enforce_workspace_write(&self, display: &str, absolute: &Path) -> EditResult<()> {
+		self.policy.enforce_workspace_write(display, absolute)
+	}
+
 	/// Plan-mode write guard, judging URL targets by their host answers.
 	///
 	/// # Errors

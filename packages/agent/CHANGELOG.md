@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Tool argument errors now identify rejection before execution, with structured rejection metadata for bounded retry handling.
+
 ## [18.12.4] - 2026-10-20
 
 ### Fixed

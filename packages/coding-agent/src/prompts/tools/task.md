@@ -17,6 +17,7 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 # Inputs
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name.{{#if structured}} `outputSchema` overrides agent/session schemas.{{/if}}
 `solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
+`cwd`: bind this spawn (including research) to an existing checkout; relative to the parent cwd. `additionalDirectories`: additional writable workspace roots, relative to the child cwd. Explicit `cwd` defaults to no additional roots; omitted `cwd` inherits the parent's roots. Bind discovery and relative tools with these fields, not prose. In batch mode, set them per item.
 {{#if seanceGuidance}}{{seanceGuidance}}{{/if}}
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.

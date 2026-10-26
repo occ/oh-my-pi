@@ -73,6 +73,15 @@ export async function runEvalWorkpool(args: unknown, options: EvalWorkpoolBridge
 		const requestedName = optionalString(record, "name");
 		const context = optionalString(record, "context");
 		const tools = optionalTools(record);
+		const cwd = optionalString(record, "cwd");
+		const additionalDirectories = record.additionalDirectories;
+		if (
+			additionalDirectories !== undefined &&
+			(!Array.isArray(additionalDirectories) ||
+				!additionalDirectories.every(root => typeof root === "string" && root.trim().length > 0))
+		) {
+			throw new ToolError("workpool additionalDirectories must be an array of non-empty directory paths");
+		}
 		if (tools?.length && options.session.getPlanModeState?.()?.enabled === true) {
 			throw new ToolError("Eval-defined tools are unavailable in plan mode.");
 		}
@@ -80,6 +89,8 @@ export async function runEvalWorkpool(args: unknown, options: EvalWorkpoolBridge
 			session: options.session,
 			invocationKind: "eval",
 			assignment: `Create workpool ${requestedName ?? agent ?? "worker"}`,
+			cwd,
+			additionalDirectories: additionalDirectories as string[] | undefined,
 			...(agent ? { agent } : {}),
 		});
 		const customTools = tools?.length

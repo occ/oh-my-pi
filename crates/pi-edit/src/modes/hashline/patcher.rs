@@ -947,12 +947,13 @@ mod lifecycle {
 			}
 			std::fs::write(dir.path().join(file), &text).unwrap();
 			let policy = PathPolicy {
-				cwd:                  dir.path().to_owned(),
-				home_dir:             dir.path().to_owned(),
-				url_schemes:          Vec::new(),
-				url_alias_schemes:    Vec::new(),
-				plan_writable_roots:  Vec::new(),
-				plan_active:          false,
+				cwd: dir.path().to_owned(),
+				home_dir: dir.path().to_owned(),
+				url_schemes: Vec::new(),
+				url_alias_schemes: Vec::new(),
+				plan_writable_roots: Vec::new(),
+				workspace_writable_roots: None,
+				plan_active: false,
 				block_auto_generated: false,
 			};
 			Self { dir, policy, store: EditStore::new() }

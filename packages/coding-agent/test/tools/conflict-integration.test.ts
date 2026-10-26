@@ -116,6 +116,33 @@ describe("read surfaces conflicts as a warning footer", () => {
 		expect(history?.get(1)?.absolutePath).toBe(filePath);
 	});
 
+	it("rejects delegated conflict URI writes outside roots before changing any bulk target", async () => {
+		const checkout = path.join(tempDir, "checkout");
+		const primary = path.join(tempDir, "primary");
+		await fs.mkdir(checkout);
+		await fs.mkdir(primary);
+		const ownFile = path.join(checkout, "own.ts");
+		const foreignFile = path.join(primary, "foreign.ts");
+		await Bun.write(ownFile, TWO_WAY);
+		await Bun.write(foreignFile, TWO_WAY);
+		const session = createTestSession(checkout, { workspaceBound: true });
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+		await read.execute("read-own", { path: ownFile });
+		await read.execute("read-foreign", { path: foreignFile });
+		await expect(write.execute("foreign-conflict", { path: "conflict://2", content: "@ours" })).rejects.toThrow(
+			/Delegated workspace/,
+		);
+		await expect(write.execute("bulk-conflict", { path: "conflict://*", content: "@ours" })).rejects.toThrow(
+			/Delegated workspace/,
+		);
+		expect(await Bun.file(ownFile).text()).toBe(TWO_WAY);
+		expect(await Bun.file(foreignFile).text()).toBe(TWO_WAY);
+		session.additionalDirectories = [primary];
+		await write.execute("declared-conflict", { path: "conflict://2", content: "@ours" });
+		expect(await Bun.file(foreignFile).text()).toBe("line 1\noldApi(x)\nline N\n");
+	});
+
 	it("registers diff3 conflicts with base section", async () => {
 		const filePath = path.join(tempDir, "three.ts");
 		await Bun.write(filePath, THREE_WAY);

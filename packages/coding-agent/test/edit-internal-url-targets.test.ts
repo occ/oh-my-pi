@@ -46,6 +46,28 @@ afterEach(async () => {
 });
 
 describe("EditTool internal URL targets", () => {
+	it("preserves local URI and plain sandbox writes outside a delegated cwd", async () => {
+		const session = createSession();
+		session.cwd = path.join(tmpDir, "workspace");
+		session.workspaceBound = true;
+		await fs.mkdir(session.cwd);
+		const target = localFile("local://notes.md");
+		await Bun.write(target, "old\n");
+		const uriResult = await new EditTool(session, "replace").execute("bound-local-uri", {
+			path: "local://notes.md",
+			old_string: "old",
+			new_string: "middle",
+		});
+		expect(uriResult.isError).not.toBe(true);
+		const pathResult = await new EditTool(session, "replace").execute("bound-local-path", {
+			path: target,
+			old_string: "middle",
+			new_string: "new",
+		});
+		expect(pathResult.isError).not.toBe(true);
+		expect(await Bun.file(target).text()).toBe("new\n");
+	});
+
 	it("edits the single-slash local:/ spelling in the sandbox its read-tier approval describes", async () => {
 		const target = localFile("local://notes.md");
 		await Bun.write(target, "old\n");

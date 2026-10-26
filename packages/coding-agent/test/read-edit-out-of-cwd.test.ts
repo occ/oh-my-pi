@@ -57,6 +57,29 @@ describe("read → edit round-trip for out-of-cwd files", () => {
 		if (homeDir) await removeWithRetries(homeDir);
 	});
 
+	it("rejects delegated out-of-cwd edits but honors explicit additional roots", async () => {
+		const outFile = path.join(outDir, "settings.txt");
+		await Bun.write(outFile, "alpha\n");
+		const session = createSession(cwdDir);
+		session.workspaceBound = true;
+		const refused = await new EditTool(session, "replace").execute("edit-bound-out", {
+			path: outFile,
+			old_string: "alpha",
+			new_string: "ALPHA",
+		});
+		expect(refused.isError).toBe(true);
+		expect(await Bun.file(outFile).text()).toBe("alpha\n");
+
+		session.additionalDirectories = [outDir];
+		const allowed = await new EditTool(session, "replace").execute("edit-bound-extra", {
+			path: outFile,
+			old_string: "alpha",
+			new_string: "ALPHA",
+		});
+		expect(allowed.isError).not.toBe(true);
+		expect(await Bun.file(outFile).text()).toBe("ALPHA\n");
+	});
+
 	it("anchors the out-of-cwd path in the header so a follow-up edit lands", async () => {
 		const outFile = path.join(outDir, "settings.json");
 		await fs.writeFile(outFile, "alpha\nbeta\n");

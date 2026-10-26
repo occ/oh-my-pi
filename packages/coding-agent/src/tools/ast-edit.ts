@@ -8,7 +8,7 @@ import type {
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { type AstReplaceChange, type AstReplaceFileChange, astEdit, type ShellFilesystem } from "@oh-my-pi/pi-natives";
+import { type AstReplaceChange, type AstReplaceFileChange, astEdit } from "@oh-my-pi/pi-natives";
 
 import { $envpos, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { getEditStore } from "../edit/store";
@@ -27,7 +27,7 @@ import { parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath, resultSnapshotPath } from "./file-recorder";
 import { formatGroupedFiles } from "@oh-my-pi/pi-tui/tools/grouped-file-output";
 
-import { relativeSearchResultPath, resolveSearchResultPath, resolveToolSearchScope } from "./path-utils";
+import { resolveToolSearchScope } from "./path-utils";
 import {
 	capParseErrors,
 	formatCodeFrameLine,
@@ -35,6 +35,7 @@ import {
 	formatParseErrors,
 } from "@oh-my-pi/pi-tui/render/render-utils";
 import { PREVIEW_PENDING_NOTICE, queueResolveHandler } from "./resolve";
+import { enforceWorkspaceWrite } from "./plan-mode-guard";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -58,7 +59,7 @@ interface AstEditCallOptions {
 	maxFiles: number;
 	failOnParseError: boolean;
 	signal?: AbortSignal;
-	filesystem: ShellFilesystem;
+	filesystem: InternalUrlFilesystem;
 }
 
 interface AstEditAggregatedResult {
@@ -87,6 +88,7 @@ async function runAstEditTargets(
 	let limitReached = false;
 	let applied = !options.dryRun;
 	for (const target of targets) {
+		const isDirectory = (await options.filesystem.stat(target.basePath)).type === "directory";
 		const targetResult = await astEdit({
 			rewrites: options.rewrites,
 			path: target.basePath,
@@ -95,7 +97,7 @@ async function runAstEditTargets(
 			maxFiles: options.maxFiles,
 			failOnParseError: options.failOnParseError,
 			signal: options.signal,
-			filesystem: options.filesystem,
+			filesystem: options.filesystem.shellFilesystem(),
 		});
 		totalReplacements += targetResult.totalReplacements;
 		filesSearched += targetResult.filesSearched;
@@ -104,12 +106,11 @@ async function runAstEditTargets(
 		if (targetResult.parseErrors) parseErrors.push(...targetResult.parseErrors);
 		for (const language of targetResult.missingGrammars ?? []) missingGrammars.add(language);
 		for (const change of targetResult.changes) {
-			const absolute = resolveSearchResultPath(target.basePath, change.path);
-			aggregatedChanges.push({ ...change, path: relativeSearchResultPath(commonBasePath, absolute) });
+			const rebased = formatResultPath(change.path, isDirectory, target.basePath, commonBasePath);
+			aggregatedChanges.push({ ...change, path: rebased });
 		}
 		for (const fileChange of targetResult.fileChanges) {
-			const absolute = resolveSearchResultPath(target.basePath, fileChange.path);
-			const rebased = relativeSearchResultPath(commonBasePath, absolute);
+			const rebased = formatResultPath(fileChange.path, isDirectory, target.basePath, commonBasePath);
 			fileCounts.set(rebased, (fileCounts.get(rebased) ?? 0) + fileChange.count);
 		}
 	}
@@ -147,7 +148,7 @@ function runAstEditOnce(
 		maxFiles: options.maxFiles,
 		failOnParseError: options.failOnParseError,
 		signal: options.signal,
-		filesystem: options.filesystem,
+		filesystem: options.filesystem.shellFilesystem(),
 	});
 }
 
@@ -286,6 +287,15 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 				},
 			});
 			const { searchPath: resolvedSearchPath, scopePath, isDirectory, multiTargets, globFilter } = scope;
+			for (const target of multiTargets ?? [{ basePath: resolvedSearchPath }]) {
+				await enforceWorkspaceWrite(this.session, target.basePath, { signal });
+			}
+			const enforceResultScope = async (preview: AstEditAggregatedResult, guardSignal?: AbortSignal) => {
+				for (const file of preview.fileChanges) {
+					const targetPath = formatResultPath(file.path, isDirectory, resolvedSearchPath, this.session.cwd);
+					await enforceWorkspaceWrite(this.session, targetPath, { signal: guardSignal });
+				}
+			};
 
 			// Dry run, so a re-run after installing missing grammars cannot double-apply.
 			const result = await rerunWithGrammars(() =>
@@ -295,9 +305,10 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 					maxFiles,
 					failOnParseError: false,
 					signal,
-					filesystem: urlFilesystem.shellFilesystem(),
+					filesystem: urlFilesystem,
 				}),
 			);
+			await enforceResultScope(result, signal);
 			const grammarNote = result.missingGrammars?.length ? missingGrammarsNote(result.missingGrammars) : undefined;
 
 			const { errors: cappedParseErrors, total: parseErrorsTotal } = capParseErrors(result.parseErrors);
@@ -443,12 +454,24 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 					apply: async (_reason: string) => {
 						// The apply outlives the preview call: its filesystem carries no signal.
 						const applyContext = sessionResolveContext(this.session);
+						// Re-scan and authorize every destination: files and symlinks may have
+						// changed since the pending preview was created.
+						if (this.session.workspaceBound) {
+							const current = await runAstEditOnce(multiTargets, resolvedSearchPath, globFilter, {
+								rewrites: normalizedRewrites,
+								dryRun: true,
+								maxFiles,
+								failOnParseError: false,
+								filesystem: new InternalUrlFilesystem({ context: applyContext, tier }),
+							});
+							await enforceResultScope(current);
+						}
 						const applyResult = await runAstEditOnce(multiTargets, resolvedSearchPath, globFilter, {
 							rewrites: normalizedRewrites,
 							dryRun: false,
 							maxFiles,
 							failOnParseError: false,
-							filesystem: new InternalUrlFilesystem({ context: applyContext, tier }).shellFilesystem(),
+							filesystem: new InternalUrlFilesystem({ context: applyContext, tier }),
 						});
 						const { errors: cappedApplyParseErrors, total: applyParseErrorsTotal } = capParseErrors(
 							applyResult.parseErrors,

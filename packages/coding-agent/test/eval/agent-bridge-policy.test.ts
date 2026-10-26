@@ -207,6 +207,24 @@ describe("runEvalAgent", () => {
 		expect(runSpy.mock.calls[1]?.[0].agent.name).toBe("reviewer");
 	});
 
+	it("binds eval agent discovery and execution to canonical explicit roots", async () => {
+		using directory = TempDir.createSync("@omp-eval-workspace-");
+		await fs.mkdir(directory.join("child"));
+		await fs.mkdir(directory.join("extra"));
+		mockAgents();
+		const run = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
+		const session = makeSession({ cwd: directory.path() });
+		session.additionalDirectories = [directory.path()];
+		await runEvalAgentAndWait({ prompt: "research", cwd: "child", additionalDirectories: ["../extra"] }, { session });
+		expect(run.mock.calls[0]?.[0].cwd).toBe(await fs.realpath(directory.join("child")));
+		expect(run.mock.calls[0]?.[0].additionalDirectories).toEqual([await fs.realpath(directory.join("extra"))]);
+		await expect(runEvalAgent({ prompt: "research", cwd: "missing" }, { session })).rejects.toThrow(
+			"existing directory",
+		);
+		await expect(runEvalAgent({ prompt: "research", additionalDirectories: [4] }, { session })).rejects.toThrow();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
 	it("throws for an unknown agent", async () => {
 		mockAgents([taskAgent]);
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));

@@ -62,28 +62,31 @@ fn reason(err: impl std::fmt::Display) -> napi::Error {
 /// Session-wide policy; TypeScript builds it once per tool call.
 #[napi(object)]
 pub struct EditPolicy {
-	pub cwd:                  String,
+	pub cwd: String,
 	/// `replace` | `patch` | `apply_patch` | `hashline` | `sloppy`.
-	pub mode:                 String,
-	pub allow_fuzzy:          bool,
-	pub fuzzy_threshold:      f64,
-	pub enforce_seen_lines:   bool,
+	pub mode: String,
+	pub allow_fuzzy: bool,
+	pub fuzzy_threshold: f64,
+	pub enforce_seen_lines: bool,
 	/// Narrowest per-line display cap any tool applies, in UTF-8 bytes (0: no
 	/// tool cuts lines). Without recorded read provenance, hashline anchors on
 	/// longer lines are rejected.
-	pub max_columns:          u32,
+	pub max_columns: u32,
 	pub block_auto_generated: bool,
-	pub plan_active:          bool,
+	pub plan_active: bool,
 	/// Registered internal URL schemes (router spec keys).
-	pub url_schemes:          Vec<String>,
+	pub url_schemes: Vec<String>,
 	/// The `urlSchemes` whose single-slash `scheme:/x` spelling aliases
 	/// `scheme://x` (spec `singleSlashAlias`).
-	pub url_alias_schemes:    Vec<String>,
+	pub url_alias_schemes: Vec<String>,
 	/// Plain-path roots writable in plan mode.
-	pub plan_writable_roots:  Vec<String>,
-	pub home_dir:             String,
+	pub plan_writable_roots: Vec<String>,
+	/// Physical roots writable by a workspace-bound session; absent means
+	/// unrestricted.
+	pub workspace_writable_roots: Option<Vec<String>>,
+	pub home_dir: String,
 	/// The payload is a verbatim custom-format string, not JSON.
-	pub raw_input:            bool,
+	pub raw_input: bool,
 }
 
 impl EditPolicy {
@@ -91,16 +94,19 @@ impl EditPolicy {
 		Ok(SessionConfig {
 			mode:               parse_mode(&self.mode)?,
 			policy:             PathPolicy {
-				cwd:                  PathBuf::from(self.cwd),
-				home_dir:             PathBuf::from(self.home_dir),
-				url_schemes:          self.url_schemes,
-				url_alias_schemes:    self.url_alias_schemes,
-				plan_writable_roots:  self
+				cwd: PathBuf::from(self.cwd),
+				home_dir: PathBuf::from(self.home_dir),
+				url_schemes: self.url_schemes,
+				url_alias_schemes: self.url_alias_schemes,
+				plan_writable_roots: self
 					.plan_writable_roots
 					.into_iter()
 					.map(PathBuf::from)
 					.collect(),
-				plan_active:          self.plan_active,
+				workspace_writable_roots: self
+					.workspace_writable_roots
+					.map(|roots| roots.into_iter().map(PathBuf::from).collect()),
+				plan_active: self.plan_active,
 				block_auto_generated: self.block_auto_generated,
 			},
 			allow_fuzzy:        self.allow_fuzzy,
@@ -859,12 +865,13 @@ pub fn edit_grammar(mode: String) -> Result<Option<String>> {
 #[napi]
 pub fn edit_auto_generated_message(absolute_path: String, display_path: String) -> Option<String> {
 	let policy = PathPolicy {
-		cwd:                  PathBuf::new(),
-		home_dir:             PathBuf::new(),
-		url_schemes:          Vec::new(),
-		url_alias_schemes:    Vec::new(),
-		plan_writable_roots:  Vec::new(),
-		plan_active:          false,
+		cwd: PathBuf::new(),
+		home_dir: PathBuf::new(),
+		url_schemes: Vec::new(),
+		url_alias_schemes: Vec::new(),
+		plan_writable_roots: Vec::new(),
+		workspace_writable_roots: None,
+		plan_active: false,
 		block_auto_generated: true,
 	};
 	let mut head = [0u8; 1024];
@@ -975,12 +982,13 @@ mod tests {
 		let config = SessionConfig {
 			mode:               EditMode::ApplyPatch,
 			policy:             PathPolicy {
-				cwd:                  cwd.to_path_buf(),
-				home_dir:             cwd.to_path_buf(),
-				url_schemes:          Vec::new(),
-				url_alias_schemes:    Vec::new(),
-				plan_writable_roots:  Vec::new(),
-				plan_active:          false,
+				cwd: cwd.to_path_buf(),
+				home_dir: cwd.to_path_buf(),
+				url_schemes: Vec::new(),
+				url_alias_schemes: Vec::new(),
+				plan_writable_roots: Vec::new(),
+				workspace_writable_roots: None,
+				plan_active: false,
 				block_auto_generated: true,
 			},
 			allow_fuzzy:        true,

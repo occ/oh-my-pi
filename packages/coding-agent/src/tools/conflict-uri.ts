@@ -23,6 +23,7 @@ import {
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import type { ToolSession } from "./index";
 import { formatPathRelativeToCwd } from "./path-utils";
+import { enforceWorkspacePath } from "./plan-mode-guard";
 import { formatTextWithMode, hashlineHeaderContext, prependHashlineHeader } from "./read-format";
 import { maybeWriteSnapshotHeader, stripWriteContent } from "./write-content";
 
@@ -157,6 +158,7 @@ async function resolveConflict(
 	signal: AbortSignal | undefined,
 ): Promise<InternalWriteResult> {
 	const absolutePath = entry.absolutePath;
+	await enforceWorkspacePath(session, absolutePath, signal);
 	if (!(await fs.exists(absolutePath))) {
 		throw new ToolError(`Conflict #${entry.id} target '${entry.displayPath}' no longer exists.`);
 	}
@@ -380,6 +382,8 @@ async function resolveAllConflicts(
 		bucket.push(entry);
 		byFile.set(entry.absolutePath, bucket);
 	}
+	// Authorize every backing file before resolving any, so a mixed-root bulk request is atomic on denial.
+	for (const absolutePath of byFile.keys()) await enforceWorkspacePath(session, absolutePath, signal);
 
 	const succeededFiles: { displayPath: string; count: number; header?: string }[] = [];
 	const failedFiles: { displayPath: string; count: number; error: string }[] = [];

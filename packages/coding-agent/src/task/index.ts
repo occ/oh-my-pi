@@ -314,6 +314,8 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		return params.tasks;
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
+	if ("cwd" in params) item.cwd = params.cwd;
+	if ("additionalDirectories" in params) item.additionalDirectories = params.additionalDirectories;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
@@ -338,6 +340,8 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
+	if ("cwd" in item) spawn.cwd = item.cwd;
+	if ("additionalDirectories" in item) spawn.additionalDirectories = item.additionalDirectories;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
@@ -919,6 +923,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	#resolveSpawnPreflight(params: TaskParams) {
 		return resolveEffectiveSubagentPolicy({
 			session: this.session,
+			cwd: params.cwd,
+			additionalDirectories: params.additionalDirectories,
 			invocationKind: "task",
 			assignment: (params.task ?? "").trim(),
 			context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
@@ -1768,6 +1774,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...this.#resultParams(params),
 				...this.#effortParams(params),
 				solutionSpace: params.solutionSpace,
+				cwd: params.cwd,
+				additionalDirectories: params.additionalDirectories,
 				...(params.tools?.length
 					? {
 							customTools: createEvalCustomTools(

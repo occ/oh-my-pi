@@ -657,6 +657,7 @@ export class EditTool implements AgentTool<TInput> {
 		const specs = router.specs();
 		const urlAliasSchemes: string[] = [];
 		for (const [scheme, spec] of specs) if (spec.singleSlashAlias) urlAliasSchemes.push(scheme);
+		const sandboxRoots = router.sandboxRoots(context);
 		return {
 			cwd: this.session.cwd,
 			mode: this.mode,
@@ -668,7 +669,10 @@ export class EditTool implements AgentTool<TInput> {
 			planActive: this.session.getPlanModeState?.()?.enabled ?? false,
 			urlSchemes: [...specs.keys()],
 			urlAliasSchemes,
-			planWritableRoots: router.sandboxRoots(context),
+			planWritableRoots: sandboxRoots,
+			workspaceWritableRoots: this.session.workspaceBound
+				? [this.session.cwd, ...(this.session.additionalDirectories ?? []), ...sandboxRoots]
+				: undefined,
 			homeDir: os.homedir(),
 			rawInput,
 		};

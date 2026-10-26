@@ -33,6 +33,7 @@ import {
 import { isCompletionProbeEnabled } from "./completion-probe";
 import { cfgTaskAgentAccountPools } from "./settings";
 import { type RestoredSeanceSession, restoreSeanceSession } from "./seance";
+import { rebaseSubagentExtensionRoots } from "./workspace-policy";
 import { seanceIsolationOptions } from "./seance-policy";
 import type { AgentDefinition } from "./types";
 
@@ -127,7 +128,7 @@ export function createPersistedSubagentReviverFactory(
 		// parent cwd, contradicting the delivery notice.
 		if (peek.init.isolated) return undefined;
 		try {
-			await fs.stat(restoredSeance?.cwd ?? peek.cwd);
+			if (!(await fs.stat(restoredSeance?.cwd ?? peek.cwd)).isDirectory()) return undefined;
 		} catch {
 			return undefined;
 		}
@@ -143,6 +144,12 @@ export function createPersistedSubagentReviverFactory(
 			parentId = registry.get(parentId)?.parentId;
 		}
 		return async expectedRef => {
+			const cwd = await fs.realpath(restoredSeance?.cwd ?? peek.cwd);
+			const parentCwd = await fs.realpath(ctx.session.sessionManager.getCwd());
+			const changedWorkspace = cwd !== parentCwd;
+			const extensionRoots = changedWorkspace
+				? await rebaseSubagentExtensionRoots(ctx.session.effectiveExtensionRoots, ctx.settings, parentCwd, cwd)
+				: ctx.session.effectiveExtensionRoots;
 			// Re-open fresh on every revive: park closes the writer, so this takes
 			// the single-writer lock cleanly and restores the full message history.
 			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
@@ -226,7 +233,9 @@ export function createPersistedSubagentReviverFactory(
 			let session: AgentSession;
 			try {
 				({ session } = await createAgentSession({
-					cwd: restoredSeance?.cwd ?? ctx.session.sessionManager.getCwd(),
+					cwd: restoredSeance?.cwd ?? peek.cwd,
+					workspaceBound: true,
+					additionalDirectories: restoredSeance ? [] : reopened.getAdditionalDirectories(),
 					authStorage: ctx.authStorage,
 					// Revived agents join the root session tree, so their observability
 					// frames ride the same bus the RPC/collab surfaces subscribed to.
@@ -269,8 +278,8 @@ export function createPersistedSubagentReviverFactory(
 					requireYieldTool: structured,
 					systemPrompt: () => [...init.systemPrompt],
 					// Inherit current owner policy, never extension authority from a transcript.
-					extensionRoots: () => ctx.session.effectiveExtensionRoots,
-					preloadedPreparedExtensions: ctx.session.preparedExtensions,
+					extensionRoots: extensionRoots ? () => extensionRoots : undefined,
+					preloadedPreparedExtensions: changedWorkspace ? undefined : ctx.session.preparedExtensions,
 					// Old files predate persisted spawns: deny re-spawning rather than let
 					// createAgentSession default to wildcard ("*").
 					spawns: init.spawns ?? "",

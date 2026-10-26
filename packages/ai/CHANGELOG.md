@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Tool-call loop detection now counts identical schema-rejected calls across changing batches without conflating corrected arguments.
+
 ## [18.12.5] - 2026-10-21
 
 ### Added

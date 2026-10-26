@@ -41,17 +41,21 @@ pub struct UrlResolution {
 /// Session-wide path policy supplied by the host once per tool call.
 #[derive(Debug, Clone)]
 pub struct PathPolicy {
-	pub cwd:                  PathBuf,
-	pub home_dir:             PathBuf,
+	pub cwd: PathBuf,
+	pub home_dir: PathBuf,
 	/// Registered internal URL schemes, lowercase, without `://` (host
 	/// router's spec keys).
-	pub url_schemes:          Vec<String>,
+	pub url_schemes: Vec<String>,
 	/// The [`Self::url_schemes`] whose single-slash `scheme:/x` spelling
 	/// aliases `scheme://x` (host spec `singleSlashAlias`).
-	pub url_alias_schemes:    Vec<String>,
+	pub url_alias_schemes: Vec<String>,
 	/// Plain-path roots that stay writable in plan mode (sandbox directories).
-	pub plan_writable_roots:  Vec<PathBuf>,
-	pub plan_active:          bool,
+	pub plan_writable_roots: Vec<PathBuf>,
+	/// Physical filesystem roots writable by a workspace-bound session;
+	/// `None` leaves top-level sessions unrestricted. URL backing files are
+	/// checked against the same roots after host router authorization.
+	pub workspace_writable_roots: Option<Vec<PathBuf>>,
+	pub plan_active: bool,
 	pub block_auto_generated: bool,
 }
 
@@ -205,6 +209,20 @@ impl PathPolicy {
 		Some(Resolved { absolute: self.cwd.join(&display), display })
 	}
 
+	/// Authorize the actual staged destination, including recovered paths.
+	/// URL backing files have additionally been authorized by the host resolver.
+	pub fn enforce_workspace_write(&self, display: &str, absolute: &Path) -> EditResult<()> {
+		let Some(roots) = &self.workspace_writable_roots else {
+			return Ok(());
+		};
+		if self.in_writable_root(absolute, roots) {
+			return Ok(());
+		}
+		Err(EditError::apply(format!(
+			"Workspace scope: cannot modify '{display}' outside the session's allowed directories."
+		)))
+	}
+
 	/// Enforce plan-mode write restrictions: renames and deletes are refused;
 	/// other writes are allowed only for URL targets whose host answer in
 	/// `urls` is plan-writable and for plain paths under
@@ -250,10 +268,14 @@ impl PathPolicy {
 	/// [`Self::plan_writable_roots`]: both sides are compared by
 	/// [`physical_path`], so a symlink under a root cannot lead outside it.
 	fn in_plan_writable_root(&self, absolute: &Path) -> bool {
+		self.in_writable_root(absolute, &self.plan_writable_roots)
+	}
+
+	fn in_writable_root(&self, absolute: &Path, roots: &[PathBuf]) -> bool {
 		let Some(target) = physical_path(&lexical_absolute(absolute, &self.cwd)) else {
 			return false;
 		};
-		self.plan_writable_roots.iter().any(|root| {
+		roots.iter().any(|root| {
 			physical_path(&lexical_absolute(root, &self.cwd))
 				.is_some_and(|root| is_within(&target, &root))
 		})
@@ -679,18 +701,81 @@ mod tests {
 
 	fn policy(root: &Path) -> PathPolicy {
 		PathPolicy {
-			cwd:                  root.to_owned(),
-			home_dir:             root.join("home"),
-			url_schemes:          vec!["sbx".into(), "ro".into()],
-			url_alias_schemes:    vec!["sbx".into()],
-			plan_writable_roots:  vec![root.join("sandbox")],
-			plan_active:          false,
+			cwd: root.to_owned(),
+			home_dir: root.join("home"),
+			url_schemes: vec!["sbx".into(), "ro".into()],
+			url_alias_schemes: vec!["sbx".into()],
+			plan_writable_roots: vec![root.join("sandbox")],
+			workspace_writable_roots: None,
+			plan_active: false,
 			block_auto_generated: true,
 		}
 	}
 
 	fn answer(absolute: Option<PathBuf>, error: Option<&str>, plan_writable: bool) -> UrlResolution {
 		UrlResolution { absolute, error: error.map(str::to_owned), plan_writable }
+	}
+
+	#[test]
+	fn workspace_scope_preserves_top_level_and_checks_router_backing_files() {
+		let tmp = tempfile::tempdir().unwrap();
+		let workspace = tmp.path().join("workspace");
+		let extra = tmp.path().join("extra");
+		std::fs::create_dir_all(&workspace).unwrap();
+		std::fs::create_dir_all(&extra).unwrap();
+		let mut p = policy(&workspace);
+		let outside = tmp.path().join("outside/missing.txt");
+		assert!(p.enforce_workspace_write("outside", &outside).is_ok());
+		p.workspace_writable_roots = Some(vec![workspace.clone(), extra.clone()]);
+		assert!(p.enforce_workspace_write("outside", &outside).is_err());
+		assert!(
+			p.enforce_workspace_write("new/a.txt", &workspace.join("new/a.txt"))
+				.is_ok()
+		);
+		assert!(
+			p.enforce_workspace_write("extra", &extra.join("new/a.txt"))
+				.is_ok()
+		);
+		assert!(
+			p.enforce_workspace_write("sbx://plan.md", &outside)
+				.is_err()
+		);
+		assert!(
+			p.enforce_workspace_write("sbx://plan.md", &extra.join("plan.md"))
+				.is_ok()
+		);
+		assert!(
+			p.enforce_workspace_write("workspace-sibling", &tmp.path().join("workspace-sibling/a"))
+				.is_err()
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn workspace_scope_rejects_existing_missing_and_dangling_symlink_escapes() {
+		let tmp = tempfile::tempdir().unwrap();
+		let workspace = tmp.path().join("workspace");
+		let outside = tmp.path().join("outside");
+		std::fs::create_dir_all(&workspace).unwrap();
+		std::fs::create_dir_all(&outside).unwrap();
+		std::fs::write(outside.join("existing.txt"), "outside").unwrap();
+		std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+		std::os::unix::fs::symlink(outside.join("missing.txt"), workspace.join("dangling")).unwrap();
+		let alias = tmp.path().join("workspace-alias");
+		std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+		let mut p = policy(&alias);
+		p.workspace_writable_roots = Some(vec![alias]);
+		for target in ["escape/existing.txt", "escape/new/deep/file.txt", "dangling"] {
+			assert!(
+				p.enforce_workspace_write(target, &workspace.join(target))
+					.is_err(),
+				"{target}"
+			);
+		}
+		assert!(
+			p.enforce_workspace_write("new/file.txt", &workspace.join("new/file.txt"))
+				.is_ok()
+		);
 	}
 
 	#[test]

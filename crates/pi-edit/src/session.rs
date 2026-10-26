@@ -302,6 +302,14 @@ impl Session {
 		}
 		let staged = self.engine.stage(&snapshot, &mut self.files, &self.store)?;
 		for file in &staged {
+			self
+				.files
+				.enforce_workspace_write(&file.display, &file.absolute)?;
+			if let Some(destination) = &file.move_to {
+				self
+					.files
+					.enforce_workspace_write(&destination.display, &destination.absolute)?;
+			}
 			self.files.enforce_write(
 				&file.display,
 				file.op,

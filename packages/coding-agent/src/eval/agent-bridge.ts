@@ -25,6 +25,8 @@ export const EVAL_AGENT_BRIDGE_NAME = "__agent__";
 const agentArgsSchema = type({
 	prompt: "string>0",
 	"agent?": "string>0",
+	"cwd?": "string>0",
+	"additionalDirectories?": "string[]",
 	"label?": "string",
 	"schema?": "unknown",
 	"schemaMode?": "'permissive' | 'strict'",
@@ -38,6 +40,8 @@ const agentArgsSchema = type({
 interface EvalAgentArgs {
 	prompt: string;
 	agent?: string;
+	cwd?: string;
+	additionalDirectories?: string[];
 	label?: string;
 	schema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
@@ -195,6 +199,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			session: options.session,
 			invocationKind: "eval",
 			assignment: parsed.prompt,
+			cwd: parsed.cwd,
+			additionalDirectories: parsed.additionalDirectories,
 			...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
 			...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 			...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
@@ -218,6 +224,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						session: options.session,
 						invocationKind: "eval",
 						assignment: parsed.prompt,
+						cwd: parsed.cwd,
+						additionalDirectories: parsed.additionalDirectories,
 						...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
 						...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 						...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),

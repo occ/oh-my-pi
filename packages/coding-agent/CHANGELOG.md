@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Repeated unchanged tool argument rejections now stop at the configured loop threshold instead of retrying indefinitely, while retaining independent results.
+- Bound delegated tasks and eval workers to explicit checkout roots, preserving their source context across revival and rejecting filesystem-tool writes/edits or explicit shell cwd outside declared roots.
+
 ## [18.12.6] - 2026-10-21
 
 ### Added

@@ -2128,6 +2128,11 @@ export class AgentSession implements SettingsScope {
 				await this.#applyRewind(rewindReport, messages, context);
 			}
 			this.#loopGuards.recordTurn(messages, context);
+			if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+				this.#advisors.prepareForTerminalYieldAdvisorDrain();
+				await this.#advisors.onPrimaryTurnEnd(messages, false);
+				return;
+			}
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			if (context?.willContinue) this.#steerAnthropicWrapUp();
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);

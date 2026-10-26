@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../../src/async";
 import { Settings } from "../../src/config/settings";
 import { runEvalWorkpool } from "../../src/eval/workpool-bridge";
@@ -56,6 +58,29 @@ describe("runEvalWorkpool", () => {
 		await expect(runEvalWorkpool({ op: "status", name: "" }, { session })).rejects.toThrow(
 			"requires a non-empty name",
 		);
+	});
+
+	it("retains canonical pool roots and rejects invalid launch roots before registration", async () => {
+		using directory = TempDir.createSync("@omp-workpool-workspace-");
+		await fs.mkdir(directory.join("child"));
+		await fs.mkdir(directory.join("extra"));
+		vi.spyOn(discovery, "discoverAgents").mockResolvedValue({ agents: [SCOUT], projectAgentsDir: null });
+		const session = makeSession();
+		session.cwd = directory.path();
+		await runEvalWorkpool(
+			{ op: "create", agent: "scout", name: "bound", cwd: "child", additionalDirectories: ["../extra"] },
+			{ session },
+		);
+		const pool = WorkPoolRegistry.global().get("Main", "bound");
+		expect(pool?.policy.workspace.cwd).toBe(await fs.realpath(directory.join("child")));
+		expect(pool?.policy.workspace.additionalDirectories).toEqual([await fs.realpath(directory.join("extra"))]);
+		await expect(runEvalWorkpool({ op: "create", name: "missing", cwd: "missing" }, { session })).rejects.toThrow(
+			"existing directory",
+		);
+		await expect(runEvalWorkpool({ op: "create", additionalDirectories: [4] }, { session })).rejects.toThrow(
+			"directory paths",
+		);
+		expect(WorkPoolRegistry.global().get("Main", "missing")).toBeUndefined();
 	});
 
 	it("rejects unknown pool names", async () => {

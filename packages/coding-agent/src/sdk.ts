@@ -548,6 +548,8 @@ export interface CreateAgentSessionOptions {
 	cwd?: string;
 	/** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
 	additionalDirectories?: string[];
+	/** Confine explicit filesystem mutations and shell cwd to the declared workspace roots. Subagents always enable this. */
+	workspaceBound?: boolean;
 	/** Global config directory. Default: ~/.omp/agent */
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
@@ -2366,6 +2368,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
+			workspaceBound: options.workspaceBound === true || isSubagentSession,
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,

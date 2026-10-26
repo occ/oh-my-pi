@@ -381,6 +381,8 @@ export class WorkPool {
 					if (agent.turns === 0) {
 						const execution = await runStructuredSubagent({
 							session: this.session,
+							cwd: this.policy.workspace.cwd,
+							additionalDirectories: this.policy.workspace.additionalDirectories,
 							invocationKind: "eval",
 							assignment: message,
 							...(this.context ? { context: this.context } : {}),

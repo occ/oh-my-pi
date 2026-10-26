@@ -13,6 +13,43 @@ fn sloppy_payload(path: &str) -> String {
 }
 
 #[tokio::test]
+async fn workspace_scope_rejects_every_operation_before_any_write() {
+	let mut ws = Workspace::new(EditMode::ApplyPatch);
+	let outside = tempfile::tempdir().unwrap();
+	let outside_file = outside.path().join("outside.txt");
+	std::fs::write(&outside_file, "outside\n").unwrap();
+	ws.write("inside.txt", "inside\n");
+	ws.config.policy.workspace_writable_roots = Some(vec![ws.cwd().to_owned()]);
+	let outside_path = outside_file.to_str().unwrap();
+	let missing_path = outside.path().join("missing/deep/new.txt");
+	let forbidden = [
+		format!("*** Update File: {outside_path}\n@@\n-outside\n+changed\n"),
+		format!("*** Delete File: {outside_path}\n"),
+		format!("*** Add File: {}\n+created\n", missing_path.display()),
+		format!(
+			"*** Update File: inside.txt\n*** Move to: {}\n@@\n-inside\n+moved\n",
+			outside.path().join("moved.txt").display()
+		),
+		format!("*** Update File: {outside_path}\n*** Move to: moved.txt\n@@\n-outside\n+moved\n"),
+	];
+	for operation in forbidden {
+		let writer = DiskWriter::default();
+		let patch = format!(
+			"*** Begin Patch\n*** Add File: allowed.txt\n+allowed\n{operation}*** End Patch\n"
+		);
+		let error = ws
+			.apply_json(&serde_json::json!({ "input": patch }), &writer)
+			.await
+			.unwrap_err();
+		assert!(error.to_string().contains("Workspace scope"), "{error}");
+		assert!(writer.requests.lock().is_empty());
+		assert_eq!(ws.read("inside.txt").as_deref(), Some("inside\n"));
+		assert!(ws.read("allowed.txt").is_none());
+		assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "outside\n");
+	}
+}
+
+#[tokio::test]
 async fn streamed_sloppy_previews_grow_and_match_apply() {
 	let ws = Workspace::new(EditMode::Sloppy);
 	ws.write("a.rs", SOURCE);
@@ -417,12 +454,13 @@ async fn hashline_rem_streaming_preview_does_not_error_on_invalid_utf8() {
 	let config = SessionConfig {
 		mode:               EditMode::Hashline,
 		policy:             PathPolicy {
-			cwd:                  cwd.clone(),
-			home_dir:             cwd,
-			url_schemes:          Vec::new(),
-			url_alias_schemes:    Vec::new(),
-			plan_writable_roots:  Vec::new(),
-			plan_active:          false,
+			cwd: cwd.clone(),
+			home_dir: cwd,
+			url_schemes: Vec::new(),
+			url_alias_schemes: Vec::new(),
+			plan_writable_roots: Vec::new(),
+			workspace_writable_roots: None,
+			plan_active: false,
 			block_auto_generated: true,
 		},
 		allow_fuzzy:        true,

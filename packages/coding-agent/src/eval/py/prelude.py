@@ -1030,9 +1030,15 @@ if "__omp_prelude_loaded__" not in globals():
         apply=None,
         merge=None,
         tools=None,
+        cwd=None,
+        additional_directories=None,
     ):
         """Start a background subagent and return its handle."""
         args = {"prompt": prompt}
+        if cwd is not None:
+            args["cwd"] = cwd
+        if additional_directories is not None:
+            args["additionalDirectories"] = list(additional_directories)
         if agent is not None:
             args["agent"] = agent
         if label is not None:
@@ -1094,9 +1100,13 @@ if "__omp_prelude_loaded__" not in globals():
         def __repr__(self):
             return f"<workpool {self.name} ({self.agent}) {self.limit} agents>"
 
-    def workpool(agent=None, *, name=None, context=None, tools=None):
+    def workpool(agent=None, *, name=None, context=None, tools=None, cwd=None, additional_directories=None):
         """Create a pool of keep-alive subagents."""
         args = {"op": "create"}
+        if cwd is not None:
+            args["cwd"] = cwd
+        if additional_directories is not None:
+            args["additionalDirectories"] = list(additional_directories)
         if agent is not None:
             args["agent"] = agent
         if name is not None:

@@ -2218,6 +2218,10 @@ export interface TaskItem {
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
 	agent?: string;
+	/** Child checkout; relative paths resolve against the parent cwd. */
+	cwd?: string;
+	/** Additional writable roots, relative to the child cwd. Explicit cwd defaults to no extra roots. */
+	additionalDirectories?: string[];
 	/** Historical source session selected by the bundled consult agent. */
 	sourceSession?: string;
 	/** Optional model selector override for the historical source session. */
@@ -2249,6 +2253,10 @@ export interface TaskParams {
 	name?: string;
 	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
 	agent?: string;
+	/** Child checkout (flat form). */
+	cwd?: string;
+	/** Additional writable roots (flat form), relative to the child cwd. */
+	additionalDirectories?: string[];
 	/** Historical source session selected by the bundled consult agent. */
 	sourceSession?: string;
 	/** Optional model selector override for the historical source session. */
