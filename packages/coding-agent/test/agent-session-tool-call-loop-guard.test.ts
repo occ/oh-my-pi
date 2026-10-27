@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Context } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -37,6 +39,7 @@ describe("AgentSession tool-call loop guard", () => {
 		await session?.dispose();
 		authStorage.close();
 		tempDir.removeSync();
+		vi.restoreAllMocks();
 	});
 
 	it("injects a hidden redirect before the next model call", async () => {
@@ -217,5 +220,116 @@ describe("AgentSession tool-call loop guard", () => {
 		await session.waitForIdle();
 		expect(requests).toBe(4);
 		expect(received).toEqual([1, 2, 3, 4]);
+	});
+
+	it("does not resume through threshold compaction after a rejection-bound stop", async () => {
+		authStorage.keys.setRuntime("anthropic", "anthropic-test-key");
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "COMPACTED",
+			shortSummary: undefined,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Require a path",
+			parameters: type({ path: "string" }),
+			execute: async () => {
+				throw new Error("Rejected call executed");
+			},
+		};
+		let executed = 0;
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Independent tool",
+			parameters: type({}),
+			execute: async () => {
+				executed++;
+				return { content: [{ type: "text", text: "independent output" }] };
+			},
+		};
+		let requests = 0;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [readTool, bashTool], messages: [] },
+			convertToLlm,
+			streamFn: () => {
+				requests++;
+				const reason = requests <= 2 ? "toolUse" : "stop";
+				const usage = { ...zeroUsage, input: 50_000, totalTokens: 50_000 };
+				const message: AssistantMessage =
+					requests <= 2
+						? {
+								role: "assistant",
+								content: [
+									{ type: "toolCall", id: `bad-${requests}`, name: "read", arguments: {} },
+									{ type: "toolCall", id: `good-${requests}`, name: "bash", arguments: {} },
+								],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage,
+								stopReason: "toolUse",
+								timestamp: Date.now(),
+							}
+						: {
+								role: "assistant",
+								content: [{ type: "text", text: "resumed" }],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: zeroUsage,
+								stopReason: "stop",
+								timestamp: Date.now(),
+							};
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: message });
+					stream.push({ type: "done", reason, message });
+				});
+				return stream;
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": true,
+			"compaction.methodOrder": ["soft"],
+			"compaction.autoContinue": true,
+			"compaction.midTurnEnabled": false,
+			"compaction.thresholdTokens": 1000,
+			"compaction.thresholdPercent": -1,
+			"compaction.keepRecentTokens": 1,
+			"contextPromotion.enabled": false,
+			"todo.enabled": false,
+			"todo.reminders": false,
+			"model.toolCallLoopGuard.enabled": true,
+			"model.toolCallLoopGuard.threshold": 2,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+			toolRegistry: new Map([
+				[readTool.name, readTool],
+				[bashTool.name, bashTool],
+			]),
+		});
+
+		await session.prompt("read the file");
+		await session.waitForIdle();
+
+		expect(requests).toBe(2);
+		expect(executed).toBe(2);
+		expect(compactSpy).not.toHaveBeenCalled();
+
+		await session.prompt("try again");
+		await session.waitForIdle();
+		expect(requests).toBe(3);
 	});
 });

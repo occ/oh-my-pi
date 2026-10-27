@@ -2267,6 +2267,9 @@ export class AgentSession implements SettingsScope {
 			}
 			this.#loopGuards.recordTurn(messages, context);
 			if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+				// Terminal yield and repeated-rejection stops share agent_end's post-yield
+				// suppression: no compaction/goal continuation until the next prompt().
+				this.#yieldTerminationPending = true;
 				this.#advisors.prepareForTerminalYieldAdvisorDrain();
 				await this.#advisors.onPrimaryTurnEnd(messages, false);
 				return;
