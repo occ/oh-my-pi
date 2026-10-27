@@ -53,6 +53,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { isDsmlLeakRecoveryTarget, removeDsmlToolMarkupLeak } from "@oh-my-pi/pi-ai/utils/dsml-leak";
+import { toolArgumentFingerprint } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
@@ -1772,6 +1773,10 @@ async function runLoopBody(
 					willContinue: hasMoreToolCalls && !isDeadlineExceeded(config.deadline),
 				});
 				turnOpen = false;
+				if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
+					return;
+				}
 
 				if (isDeadlineExceeded(config.deadline)) {
 					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
@@ -2872,6 +2877,7 @@ interface PreparedToolCall {
 	/** Transform failure retained for execution's scheduled error result. */
 	transformError?: unknown;
 	validationErrorMessage?: string;
+	toolArgumentFingerprint?: string;
 	blocked?: boolean;
 	blockReason?: string;
 	prepareError?: unknown;
@@ -3138,21 +3144,38 @@ async function prepareToolCallDispatch(
 				}
 			}
 		}
-		const validate = (args: Record<string, unknown>): Record<string, unknown> | undefined => {
+		const validate = (
+			args: Record<string, unknown>,
+			source: "model" | "hook",
+		): Record<string, unknown> | undefined => {
 			try {
 				if (!tool) {
 					throw new Error(formatToolNotFoundMessage(toolCall.name, context.tools, suggestFallbackToolNames?.()));
 				}
 				return validateAgentToolArguments(tool, { ...toolCall, arguments: args });
 			} catch (validationError) {
-				const parseFailed = "__parseError" in args;
+				const parseFailed = args !== null && typeof args === "object" && "__parseError" in args;
 				entry.args = parseFailed ? { __parseError: args.__parseError } : args;
 				entry.validationErrorMessage =
 					validationError instanceof Error ? validationError.message : String(validationError);
+				if (validationError instanceof AIError.ValidationError) {
+					if (source === "model") entry.toolArgumentFingerprint = toolArgumentFingerprint(args);
+					logger.debug("Tool arguments rejected before execution", {
+						toolName: toolCall.name,
+						toolCallId: toolCall.id,
+						argumentSource: source,
+						argumentKind: args === null ? "null" : Array.isArray(args) ? "array" : typeof args,
+						argumentCount: args && typeof args === "object" ? Object.keys(args).length : 0,
+					});
+					entry.validationErrorMessage +=
+						source === "model"
+							? "\nRejected before tool execution. Correct the arguments for this tool before retrying; the tool was not run."
+							: "\nRejected before tool execution: the beforeToolCall hook supplied invalid revised arguments. The tool was not run.";
+				}
 				return undefined;
 			}
 		};
-		const effectiveArgs = validate(argsForExecution);
+		const effectiveArgs = validate(argsForExecution, "model");
 		if (effectiveArgs === undefined) continue;
 		entry.args = effectiveArgs;
 		if (!beforeToolCall || !tool) continue;
@@ -3178,7 +3201,7 @@ async function prepareToolCallDispatch(
 		}
 		if (beforeResult?.args !== undefined) {
 			// Revalidate: a hook revision is untrusted input to the tool schema.
-			const revised = validate(beforeResult.args);
+			const revised = validate(beforeResult.args, "hook");
 			if (revised === undefined) continue;
 			// Bake the revision into the message itself. On the streamed path this
 			// precedes every consumer snapshot, so there is exactly one version of
@@ -3370,6 +3393,7 @@ async function executeToolCalls(
 			toolResultMessage: undefined as ToolResultMessage | undefined,
 			resultEmitted: false,
 			validationErrorMessage: prepared.validationErrorMessage,
+			toolArgumentFingerprint: prepared.toolArgumentFingerprint,
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
 			prepareError: prepared.prepareError,
@@ -3561,7 +3585,16 @@ async function executeToolCalls(
 				record,
 				{
 					content: [{ type: "text" as const, text: record.validationErrorMessage }],
-					details: { isError: true, error: record.validationErrorMessage },
+					details: {
+						isError: true,
+						error: record.validationErrorMessage,
+						...(record.toolArgumentFingerprint
+							? {
+									toolArgumentRejection: true,
+									toolArgumentFingerprint: record.toolArgumentFingerprint,
+								}
+							: {}),
+					},
 				},
 				true,
 			);

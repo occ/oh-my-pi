@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed tool-call loop detection missing a model resending the same invalid tool arguments across changing batches; corrected arguments start a fresh count
+
 ## [18.13.2] - 2026-10-27
 
 ### Fixed

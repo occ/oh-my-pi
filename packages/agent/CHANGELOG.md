@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed tool calls rejected by argument validation reading like tool failures; the error now says the tool was not run, and the result marks the rejection so hosts can stop repeated identical attempts
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

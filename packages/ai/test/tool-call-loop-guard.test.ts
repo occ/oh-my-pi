@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
+import { ToolCallLoopGuard, toolArgumentFingerprint } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 
 const zeroUsage = {
@@ -426,5 +426,36 @@ describe("ToolCallLoopGuard multi-call turns", () => {
 		expect(guard.recordTurn(turn(b()))).toBeNull();
 		expect(guard.recordTurn(turn(a()))).toBeNull();
 		expect(guard.recordTurn(turn(b()))).toBeNull();
+	});
+
+	test("bounds identical schema failures without conflating corrected arguments or execution errors", () => {
+		const guard = new ToolCallLoopGuard({ threshold: 2, exemptTools: [] });
+		const rejectedTurn = (args: Record<string, unknown>, schemaRejected = true, copies = 1) => {
+			const calls = Array.from({ length: copies }, () => toolCall("read", args));
+			return turn(
+				calls,
+				calls.map(call => ({
+					role: "toolResult" as const,
+					toolCallId: call.id,
+					toolName: call.name,
+					content: [{ type: "text" as const, text: "Missing path" }],
+					details: schemaRejected
+						? { toolArgumentRejection: true, toolArgumentFingerprint: toolArgumentFingerprint(args) }
+						: {},
+					isError: true,
+					timestamp: Date.now(),
+				})),
+			);
+		};
+		expect(guard.recordTurn(rejectedTurn({}, true, 4))).toBeNull();
+		expect(guard.recordTurn(rejectedTurn({ path: 42 }))).toBeNull();
+		expect(guard.recordTurn(rejectedTurn({ path: "valid.ts" }, false))).toBeNull();
+		expect(guard.recordTurn(rejectedTurn({}))).toMatchObject({
+			kind: "repeated_tool_argument_rejection",
+			toolName: "read",
+			count: 2,
+		});
+		guard.reset();
+		expect(guard.recordTurn(rejectedTurn({}))).toBeNull();
 	});
 });

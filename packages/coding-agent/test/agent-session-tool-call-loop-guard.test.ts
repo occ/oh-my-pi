@@ -118,4 +118,104 @@ describe("AgentSession tool-call loop guard", () => {
 		expect(redirects).toHaveLength(1);
 		expect(redirects[0]!.display).toBe(false);
 	});
+
+	it("stops unchanged schema rejections across changing batches and preserves independent nested calls", async () => {
+		const model = createMockModel({ provider: "openai", id: "gpt-test" }).model;
+		const received: number[] = [];
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Require a path",
+			parameters: type({ path: "string" }),
+			execute: async () => {
+				throw new Error("Rejected call executed");
+			},
+		};
+		const nestedSchema = type({ i: "string", payload: { i: "string", items: "number[]" } });
+		const nestedTool: AgentTool<typeof nestedSchema> = {
+			name: "nested",
+			label: "Nested",
+			description: "Consume nested data",
+			parameters: nestedSchema,
+			execute: async (_id, args) => {
+				expect(args.i).toBe("schema-owned");
+				expect(args.payload.i).toBe("nested-value");
+				received.push(...args.payload.items);
+				return { content: [{ type: "text", text: "Nested call completed" }] };
+			},
+		};
+		let requests = 0;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			intentTracing: true,
+			initialState: { model, systemPrompt: ["Test"], tools: [readTool, nestedTool], messages: [] },
+			convertToLlm,
+			streamFn: () => {
+				requests++;
+				if (requests > 4) throw new Error("Schema rejection cascade did not stop");
+				const message: AssistantMessage = {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: `bad-${requests}`,
+							name: "read",
+							arguments: { i: `Reading attempt ${requests}` },
+						},
+						{
+							type: "toolCall",
+							id: `good-${requests}`,
+							name: "nested",
+							arguments: { i: "schema-owned", payload: { i: "nested-value", items: [requests] } },
+						},
+					],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: zeroUsage,
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				};
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: message });
+					stream.push({ type: "done", reason: "toolUse", message });
+				});
+				return stream;
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"todo.enabled": false,
+			"model.toolCallLoopGuard.enabled": true,
+			"model.toolCallLoopGuard.threshold": 2,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+			toolRegistry: new Map([
+				[readTool.name, readTool],
+				[nestedTool.name, nestedTool],
+			]),
+		});
+
+		await session.prompt("read and process nested data");
+		await session.waitForIdle();
+		expect(requests).toBe(2);
+		expect(received).toEqual([1, 2]);
+		const results = agent.state.messages.filter(message => message.role === "toolResult");
+		expect(results.filter(result => result.toolName === "nested" && !result.isError)).toHaveLength(2);
+		const rejected = results.filter(result => result.toolName === "read");
+		expect(rejected).toHaveLength(2);
+		expect(rejected[1]).toMatchObject({ isError: true, details: { toolArgumentRejection: true } });
+		expect(JSON.stringify(rejected[1]!.content)).toContain("Rejected before tool execution");
+
+		await session.prompt("try another prompt");
+		await session.waitForIdle();
+		expect(requests).toBe(4);
+		expect(received).toEqual([1, 2, 3, 4]);
+	});
 });

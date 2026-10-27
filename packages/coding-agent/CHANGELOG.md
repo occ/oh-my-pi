@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the agent retrying the same rejected tool arguments indefinitely; it now stops at the configured loop threshold and keeps the results of other calls in the batch
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

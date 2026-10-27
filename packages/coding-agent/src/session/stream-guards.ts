@@ -4,6 +4,7 @@ import {
 	type AgentMessage,
 	type AgentTurnEndContext,
 	createToolScopedAbortReason,
+	TERMINAL_TOOL_RESULT_ABORT_REASON,
 } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent, Model } from "@oh-my-pi/pi-ai";
 import { GeminiHeaderRunDetector } from "@oh-my-pi/pi-ai/utils/thinking-loop";
@@ -202,6 +203,7 @@ export class LoopGuards {
 	#geminiHeaderDetector: GeminiHeaderRunDetector | undefined;
 	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
 	#toolCallLoopGuardSettingsKey: string | undefined;
+	#toolCallLoopPromptSequence = -1;
 
 	constructor(host: StreamGuardsHost) {
 		this.#host = host;
@@ -210,12 +212,33 @@ export class LoopGuards {
 	/** Records a completed turn and injects a redirect when calls repeat. */
 	recordTurn(messages: AgentMessage[], context: AgentTurnEndContext | undefined): void {
 		if (context?.message.role !== "assistant") return;
+		const sequence = this.#host.promptSequence();
+		if (sequence !== this.#toolCallLoopPromptSequence) {
+			this.#toolCallLoopGuard?.reset();
+			this.#toolCallLoopPromptSequence = sequence;
+		}
 		const detection = this.#activeToolCallLoopGuard()?.recordTurn({
 			message: context.message,
 			toolResults: context.toolResults,
 			injectedContext: (context.additionalMessages?.length ?? 0) > 0,
 		});
-		if (detection) this.#injectToolCallLoopRedirect(messages, detection);
+		if (!detection) return;
+		if (detection.kind === "repeated_tool_argument_rejection") {
+			context.willContinue = false;
+			logger.warn("Repeated identical tool arguments rejected before execution", {
+				toolName: detection.toolName,
+				count: detection.count,
+			});
+			this.#host.emitNotice(
+				"error",
+				`Stopped after ${detection.count} unchanged argument rejections for ${detection.toolName}. Correct its arguments before continuing; rejected calls did not execute.`,
+				"tool-call-loop",
+			);
+			// The completed batch (including independent successful calls) is already persisted.
+			this.#host.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+			return;
+		}
+		this.#injectToolCallLoopRedirect(messages, detection);
 	}
 
 	/** Feeds a streamed assistant event to the Gemini header-runaway detector. */
