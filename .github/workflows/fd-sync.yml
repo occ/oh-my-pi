@@ -16,7 +16,8 @@
 # Trust boundary: `replay` executes upstream code with a read-only token.
 # `publish` holds the FD_SYNC deploy key and runs only git/gh. A deploy key is
 # used because commits under main touch .github/workflows, which GITHUB_TOKEN
-# cannot push.
+# cannot push. When the rebase recompiles generated compat rules, `replay` runs
+# the compiler and hands its outputs to `publish` as data (FD_COMPAT_FROM).
 name: FleetDriver upstream sync
 
 on:
@@ -82,12 +83,23 @@ jobs:
               fi
               echo "latest=$latest mode=$mode"
               { echo "latest=$latest"; echo "mode=$mode"; echo "tree=$tree"; echo "current=$current"; } >> "$GITHUB_OUTPUT"
+         # bun for fd-rebase.sh, which recompiles generated compat rules when
+         # they conflict; the install after the rebase matches the new lockfile.
+         - uses: ./.github/actions/bun-install
+           if: steps.plan.outputs.mode == 'release'
          - name: Rebase patch queue
            id: rebase
            if: steps.plan.outputs.mode == 'release'
            env:
               LATEST: ${{ steps.plan.outputs.latest }}
+              FD_COMPAT_TO: ${{ runner.temp }}/fd-compat
            run: bash .github/scripts/fd-rebase.sh
+         - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           if: steps.plan.outputs.mode == 'release'
+           with:
+              name: fd-compat-outputs
+              path: ${{ runner.temp }}/fd-compat
+              if-no-files-found: error
          - uses: ./.github/actions/bun-install
            if: steps.plan.outputs.mode == 'release'
          - name: Gate
@@ -122,10 +134,22 @@ jobs:
               ref: main
               fetch-depth: 0
               ssh-key: ${{ secrets.FD_SYNC_KEY }}
+         - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           if: env.MODE == 'release'
+           with:
+              name: fd-compat-outputs
+              path: ${{ runner.temp }}/fd-compat
          - name: Rebuild the tested tree
            run: |
               set -euo pipefail
               echo "MAIN_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+              # Gated compat outputs as data: this job must not run tree code.
+              if [ "$MODE" = release ]; then
+                export FD_COMPAT_FROM="$RUNNER_TEMP/fd-compat"
+              else
+                git fetch -q origin "refs/tags/$LATEST-fd.1:refs/tags/$LATEST-fd.1"
+                export FD_COMPAT_FROM="$LATEST-fd.1"
+              fi
               bash .github/scripts/fd-rebase.sh
               if [ "$(git rev-parse 'HEAD^{tree}')" != "$TESTED_TREE" ]; then
                 echo "::error::rebased tree differs from the gated tree"; exit 1
