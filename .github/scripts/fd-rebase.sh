@@ -8,6 +8,13 @@
 # replay upstream commits as if they were ours. Patches already present
 # upstream become empty and are dropped by rebase.
 #
+# A conflict confined to the generated compat outputs (COMPAT_OUTPUTS) does not
+# stop the rebase: rules.json merges as binary and upstream rewrites it almost
+# every release, so the merged KDL rules are recompiled with `gen:compat`. That
+# needs bun and npm. FD_COMPAT_FROM (a directory or git revision holding the
+# gated outputs) uses those bytes instead and runs no tree code; fd-sync's
+# deploy-key job sets it. FD_COMPAT_TO receives the final outputs.
+#
 # Manual path (when fd-sync reports a conflict), from a checkout of fork main:
 #   .github/scripts/fd-rebase.sh       # stops at the conflicting patch
 #   # resolve, `git add <files>`, `git rebase --continue`; repeat
@@ -70,11 +77,73 @@ report_conflict() {
 	fi
 }
 
+COMPAT_OUTPUTS=(
+	packages/catalog/src/compat/rules.json
+	packages/catalog/src/compat/auth-ids.ts
+	packages/catalog/src/compat/provider-ids.ts
+)
+
+# Snapshot: the rebase rewrites .github/scripts underneath this script.
+natives_script="$(mktemp)"
+cp "$(dirname "$0")/fd-natives.sh" "$natives_script"
+trap 'rm -f "$natives_script"' EXIT
+
+compat_conflicts_only() {
+	local conflicted f
+	conflicted="$(git diff --name-only --diff-filter=U)"
+	[ -n "$conflicted" ] || return 1
+	while IFS= read -r f; do
+		case " ${COMPAT_OUTPUTS[*]} " in
+		*" $f "*) ;;
+		*) return 1 ;;
+		esac
+	done <<<"$conflicted"
+}
+
+native_platform() {
+	case "$(uname -s)-$(uname -m)" in
+	Linux-x86_64) echo linux-x64 ;;
+	Darwin-arm64) echo darwin-arm64 ;;
+	*)
+		echo "error: upstream publishes no native addon for $(uname -s)-$(uname -m)" >&2
+		return 1
+		;;
+	esac
+}
+
+# Called from a `||` list, where errexit is off: every step checks its status.
+resolve_compat() {
+	local f platform
+	if [ -n "${FD_COMPAT_FROM:-}" ]; then
+		for f in "${COMPAT_OUTPUTS[@]}"; do
+			if [ -d "$FD_COMPAT_FROM" ]; then
+				cp "$FD_COMPAT_FROM/$f" "$f" || return 1
+			else
+				git show "$FD_COMPAT_FROM:$f" >"$f" || return 1
+			fi
+		done
+	else
+		platform="$(native_platform)" || return 1
+		bun install --frozen-lockfile || return 1
+		bash "$natives_script" "$platform" || return 1
+		(cd packages/catalog && bun run gen:compat) || return 1
+	fi
+	git add -- "${COMPAT_OUTPUTS[@]}"
+}
+
 base="$(git merge-base HEAD "$LATEST")"
 if [ "$base" != "$(git rev-parse "$LATEST^{commit}")" ]; then
 	echo "==> rebasing patches $base..HEAD onto $LATEST"
 	git log --oneline "$base..HEAD"
-	if ! git -c merge.conflictStyle=zdiff3 rebase --onto "$LATEST" "$base" HEAD; then
+	rc=0
+	git -c merge.conflictStyle=zdiff3 rebase --onto "$LATEST" "$base" HEAD || rc=$?
+	while [ "$rc" -ne 0 ] && compat_conflicts_only; do
+		echo "==> recompiling compat rules for $(git log -1 --format='%h %s' REBASE_HEAD)"
+		resolve_compat || break
+		rc=0
+		GIT_EDITOR=true git -c merge.conflictStyle=zdiff3 rebase --continue || rc=$?
+	done
+	if [ "$rc" -ne 0 ]; then
 		report_conflict
 		if [ -n "${GITHUB_ACTIONS:-}" ]; then
 			git rebase --abort || true
@@ -96,4 +165,10 @@ echo "==> FleetDriver patches on $LATEST:"
 git log --oneline "$LATEST..HEAD"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
 	echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+fi
+if [ -n "${FD_COMPAT_TO:-}" ]; then
+	for f in "${COMPAT_OUTPUTS[@]}"; do
+		mkdir -p "$FD_COMPAT_TO/$(dirname "$f")"
+		git show "HEAD:$f" >"$FD_COMPAT_TO/$f"
+	done
 fi
