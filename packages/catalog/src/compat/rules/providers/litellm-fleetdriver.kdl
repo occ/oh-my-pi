@@ -1,0 +1,12 @@
+// FleetDriver LiteLLM routing tiers. Each tier's primary deployments are
+// Claude (served through Meridian), so Claude's input classifier sees these
+// requests. Their aliases classify as `unknown`, so the `anthropic` class rule
+// never applies; without this, compaction archives and summaries replay
+// reasoning as text and the classifier refuses the turn. Leaving reasoning out
+// costs little when a tier fails over to another family.
+provider "litellm" {
+	// residue: routing aliases that taxonomy cannot classify.
+	models "fd-coder" "fd-med" "fd-small" {
+		classifier-cot-extraction #true
+	}
+}
