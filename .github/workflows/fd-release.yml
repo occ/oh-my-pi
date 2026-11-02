@@ -59,7 +59,7 @@ jobs:
                  platform: linux
                  target_id: linux-x64
                  native_targets: linux-x64-baseline linux-x64-modern
-               - os: macos-14
+               - os: macos-15
                  platform: darwin
                  target_id: darwin-arm64
                  native_targets: darwin-arm64
@@ -154,7 +154,7 @@ jobs:
          matrix:
             include:
                - { os: ubuntu-22.04, target_id: linux-x64 }
-               - { os: macos-14, target_id: darwin-arm64 }
+               - { os: macos-15, target_id: darwin-arm64 }
       runs-on: ${{ matrix.os }}
       steps:
          - name: Download, checksum, sign-check, and smoke
