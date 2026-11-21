@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Remote guests now see HTML form explanations alongside each question, including
+  when editing Other answers or retrying invalid input.
+
 ## [18.22.2] - 2026-11-18
 
 ### Added

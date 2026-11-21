@@ -1274,7 +1274,7 @@ describe("guest HTML form race", () => {
 		}
 	}
 
-	it("walks the guest through each field and returns its answers as form data", async () => {
+	it("preserves each field's context through guest toggles and validation retries", async () => {
 		const ctx = makeAskHostContext();
 		const host = new CollabHost(ctx);
 		await host.start("ws://localhost:8787");
@@ -1286,15 +1286,22 @@ describe("guest HTML form race", () => {
 			if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
 
 			const result = controller.showFormDialog(`<form>
+				<p>Configure the deployment.</p>
+				<p>Use <code>db.primary</code> for storage.</p>
 				<input type="hidden" name="plan" value="v2">
 				<fieldset><legend>Database</legend>
+					<p>Choose persistent storage.</p>
 					<label><input type="radio" name="db" value="sqlite"> SQLite</label>
 					<label><input type="radio" name="db" value="postgres" checked> Postgres</label>
 				</fieldset>
 				<fieldset><legend>Extras</legend>
+					<ul><li>Cache speeds up reads.</li><li>Queue handles jobs.</li></ul>
+					<table><tr><th>Service</th><th>Cost</th></tr><tr><td>Cache</td><td>Small</td></tr></table>
 					<label><input type="checkbox" name="extras" value="cache" required> Cache</label>
 					<label><input type="checkbox" name="extras" value="queue"> Queue</label>
 				</fieldset>
+				<p>Set worker capacity.</p>
+				<pre>workers = 3\r\nminimum = 1</pre>
 				<label>Workers <input type="number" name="workers" value="3" min="1"></label>
 			</form>`);
 
@@ -1302,6 +1309,15 @@ describe("guest HTML form race", () => {
 			if (db.request.kind !== "select") throw new Error(`expected select, got ${db.request.kind}`);
 			expect(db.request.options).toEqual(["SQLite", "Postgres", "Other (type your own)"]);
 			expect(db.request.initialIndex).toBe(1);
+			for (const text of [
+				"Configure the deployment.",
+				"Use db.primary for storage.",
+				"Choose persistent storage.",
+				"Database",
+			]) {
+				expect(db.request.title.split(text)).toHaveLength(2);
+			}
+			expect(db.request.title).not.toContain("Cache speeds up reads.");
 			guest.socket.send({ t: "ui-response", reqId: db.request.reqId, value: "SQLite" });
 
 			// A required group offers Next only once something is checked.
@@ -1312,6 +1328,18 @@ describe("guest HTML form race", () => {
 			const extrasNext = await nextUiRequest(guest);
 			if (extrasNext.request.kind !== "select") throw new Error(`expected select, got ${extrasNext.request.kind}`);
 			expect(extrasNext.request.checkedIndices).toEqual([1]);
+			expect(extrasNext.request.title).toBe(extras.request.title);
+			for (const text of [
+				"Cache speeds up reads.",
+				"Queue handles jobs.",
+				"Service | Cost",
+				"Cache | Small",
+				"Extras",
+			]) {
+				expect(extras.request.title.split(text)).toHaveLength(2);
+			}
+			expect(extras.request.title).not.toContain("Configure the deployment.");
+			expect(extras.request.title).not.toContain("Set worker capacity.");
 			guest.socket.send({ t: "ui-response", reqId: extrasNext.request.reqId, value: "Next →" });
 
 			// A value the form rejects is asked again with the reason.
@@ -1323,6 +1351,14 @@ describe("guest HTML form race", () => {
 			if (retry.request.kind !== "editor") throw new Error(`expected editor, got ${retry.request.kind}`);
 			expect(retry.request.prefill).toBe("0");
 			expect(retry.request.title).not.toBe(workers.request.title);
+			for (const title of [workers.request.title, retry.request.title]) {
+				expect(title).not.toContain("\r");
+				for (const text of ["Set worker capacity.", "workers = 3\nminimum = 1", "Workers"]) {
+					expect(title.split(text)).toHaveLength(2);
+				}
+				expect(title).not.toContain("Cache speeds up reads.");
+				expect(title).not.toContain("Configure the deployment.");
+			}
 			guest.socket.send({ t: "ui-response", reqId: retry.request.reqId, value: "8" });
 
 			expect(await result).toEqual({ data: { plan: "v2", db: "sqlite", extras: ["queue"], workers: 8 } });
@@ -1345,10 +1381,12 @@ describe("guest HTML form race", () => {
 
 			const result = controller.showFormDialog(`<form>
 				<fieldset><legend>Database</legend>
+					<p>Custom database versions are welcome.</p>
 					<label><input type="radio" name="db" value="sqlite"> SQLite</label>
 					<label><input type="radio" name="db" value="postgres"> Postgres</label>
 				</fieldset>
 				<fieldset><legend>Extras</legend>
+					<p>Include additional infrastructure.</p>
 					<label><input type="checkbox" name="extras" value="cache"> Cache</label>
 					<label><input type="checkbox" name="extras" value="queue"> Queue</label>
 				</fieldset>
@@ -1361,17 +1399,29 @@ describe("guest HTML form race", () => {
 			};
 
 			// A cancelled Other editor re-shows the options.
-			await answer("select", "Other (type your own)");
-			await answer("editor");
-			await answer("select", "Other (type your own)");
-			expect((await answer("editor", " MySQL 8 ")).title).toBe("Database");
+			const db = await answer("select", "Other (type your own)");
+			const cancelled = await answer("editor");
+			const reopened = await answer("select", "Other (type your own)");
+			const custom = await answer("editor", " MySQL 8 ");
+			for (const request of [db, cancelled, reopened, custom]) {
+				expect(request.title).toBe(db.title);
+				expect(request.title.split("Custom database versions are welcome.")).toHaveLength(2);
+				expect(request.title.split("Database")).toHaveLength(2);
+				expect(request.title).not.toContain("Include additional infrastructure.");
+			}
 
-			await answer("select", "Cache");
-			await answer("select", "Other (type your own)");
-			await answer("editor", "terraform");
+			const extras = await answer("select", "Cache");
+			const toggled = await answer("select", "Other (type your own)");
+			const other = await answer("editor", "terraform");
 			const done = await answer("select", "Next →");
 			if (done.kind !== "select") throw new Error(`expected select, got ${done.kind}`);
 			expect(done.checkedIndices).toEqual([0, 2]);
+			for (const request of [extras, toggled, other, done]) {
+				expect(request.title).toBe(extras.title);
+				expect(request.title.split("Include additional infrastructure.")).toHaveLength(2);
+				expect(request.title.split("Extras")).toHaveLength(2);
+				expect(request.title).not.toContain("Custom database versions are welcome.");
+			}
 
 			expect(await result).toEqual({ data: { db: "MySQL 8", extras: ["cache", "terraform"] } });
 			guest.socket.close();
