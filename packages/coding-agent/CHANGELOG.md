@@ -246,6 +246,8 @@
 - Fixed MCP OAuth reauthentication errors to expose registration endpoints, status details, and remedies, and fixed auth-broker shutdown so refreshed tokens are saved safely.
 - Fixed Spotlight retry and account handling, including waitlisted accounts, rate limits, outages, and request identification.
 - Fixed cross-platform shell and desktop behavior, including macOS startup and redraw performance, Windows file operations and application lookup, speech output, and desktop opening.
+- Remote guests now see HTML form explanations alongside each question, including
+  when editing Other answers or retrying invalid input.
 
 ## [18.22.2] - 2026-11-18
 

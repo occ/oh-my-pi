@@ -41,6 +41,7 @@ import {
 import { installExtensionComposerShape } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import {
 	choiceValue,
+	fieldContexts,
 	fieldError,
 	fieldQuestions,
 	type HtmlFormData,
@@ -1025,10 +1026,13 @@ export class ExtensionUiController {
 		signal: AbortSignal,
 	): Promise<ExtensionFormDialogResult | "unavailable" | undefined> {
 		const questions = fieldQuestions(form);
+		const contexts = fieldContexts(form);
 		const data: HtmlFormData = Object.fromEntries(form.hidden);
 		for (const field of form.fields) {
 			if (!field.name) continue;
-			const question = sanitizeCarriageReturns(questions.get(field) ?? field.name);
+			const context = contexts.get(field);
+			const line = questions.get(field) ?? field.name;
+			const question = sanitizeCarriageReturns(context ? `${context}\n\n${line}` : line);
 			const result =
 				field.kind === "choice"
 					? await this.#runGuestFormChoice(host, field, question, signal)
