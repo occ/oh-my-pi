@@ -23,9 +23,23 @@ if [ -n "$changed" ]; then
 	exit 1
 fi
 
+# Registry metadata via curl+jq, not `npm view`: local resolution shells often
+# lack npm. Standalone assignments so a failed lookup stops the script under
+# errexit, and the tarball must match the registry's integrity before unpacking.
 for platform in "$@"; do
+	pkg="@oh-my-pi/pi-natives-$platform"
+	meta="$(curl -fsSL --retry 3 "https://registry.npmjs.org/$pkg/$version")"
+	url="$(jq -er .dist.tarball <<<"$meta")"
+	integrity="$(jq -er .dist.integrity <<<"$meta")"
 	t="$(mktemp -d)"
-	curl -fsSL --retry 3 "$(npm view "@oh-my-pi/pi-natives-$platform@$version" dist.tarball)" | tar -xz -C "$t"
+	curl -fsSL --retry 3 -o "$t/addon.tgz" "$url"
+	actual="sha512-$(openssl dgst -sha512 -binary "$t/addon.tgz" | openssl base64 -A)"
+	if [ "$actual" != "$integrity" ]; then
+		echo "::error::$pkg@$version tarball does not match the registry integrity $integrity"
+		exit 1
+	fi
+	tar -xzf "$t/addon.tgz" -C "$t"
 	cp "$t"/package/pi_natives."$platform"*.node packages/natives/native/
-	echo "installed @oh-my-pi/pi-natives-$platform@$version"
+	rm -rf "$t"
+	echo "installed $pkg@$version"
 done

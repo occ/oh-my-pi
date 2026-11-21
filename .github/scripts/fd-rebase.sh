@@ -11,14 +11,18 @@
 # A conflict confined to the generated compat outputs (COMPAT_OUTPUTS) does not
 # stop the rebase: rules.json merges as binary and upstream rewrites it almost
 # every release, so the merged KDL rules are recompiled with `gen:compat`. That
-# needs bun and npm. FD_COMPAT_FROM (a directory or git revision holding the
-# gated outputs) uses those bytes instead and runs no tree code; fd-sync's
-# deploy-key job sets it. FD_COMPAT_TO receives the final outputs.
+# needs bun, curl, jq, and openssl. FD_COMPAT_FROM (a directory or git revision
+# holding the gated outputs) uses those bytes instead and runs no tree code;
+# fd-sync's deploy-key job sets it. FD_COMPAT_TO receives the final outputs.
+#
+# Rerunning the script while its rebase is stopped resumes it, applying the
+# same compat recompilation to every later patch; a bare `git rebase
+# --continue` would skip it. A stopped tree may predate these scripts, so a
+# local stop keeps a copy under the git dir and prints the command to resume.
 #
 # Manual path (when fd-sync reports a conflict), from a checkout of fork main:
 #   .github/scripts/fd-rebase.sh       # stops at the conflicting patch
-#   # resolve, `git add <files>`, `git rebase --continue`; repeat
-#   .github/scripts/fd-rebase.sh       # no-op rebase; verifies the result
+#   # resolve, `git add <files>`, run the resume command it prints; repeat
 #   .github/scripts/fd-gate.sh         # same gate fd-sync runs
 #   git push --force-with-lease=main:<old main sha> <fork remote> HEAD:main
 #   gh workflow run fd-sync.yml -R occ/oh-my-pi   # releases <tag>-fd.1
@@ -37,9 +41,19 @@ if [ "${1:-}" = "--print-latest" ]; then
 	exit 0
 fi
 
-if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
-	echo "error: a rebase is in progress; finish it (git rebase --continue) or abort it first" >&2
+if [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+	echo "error: a non-merge rebase is in progress; finish or abort it first" >&2
 	exit 1
+fi
+rebase_dir="$(git rev-parse --git-path rebase-merge)"
+resuming=false
+if [ -d "$rebase_dir" ]; then
+	onto="$(cat "$rebase_dir/onto")"
+	if [ "$onto" != "$(git rev-parse "$LATEST^{commit}")" ]; then
+		echo "error: the rebase in progress targets $(git describe --tags --exact-match "$onto" 2>/dev/null || echo "$onto"), not $LATEST; set LATEST to it or abort the rebase" >&2
+		exit 1
+	fi
+	resuming=true
 fi
 
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -83,10 +97,13 @@ COMPAT_OUTPUTS=(
 	packages/catalog/src/compat/provider-ids.ts
 )
 
-# Snapshot: the rebase rewrites .github/scripts underneath this script.
-natives_script="$(mktemp)"
-cp "$(dirname "$0")/fd-natives.sh" "$natives_script"
-trap 'rm -f "$natives_script"' EXIT
+# Snapshot both scripts: the rebase rewrites .github/scripts underneath this
+# script, and a stopped rebase is resumed from a kept copy (resume_dir).
+snap="$(mktemp -d)"
+cp "${BASH_SOURCE[0]}" "$(dirname "${BASH_SOURCE[0]}")/fd-natives.sh" "$snap/"
+natives_script="$snap/fd-natives.sh"
+trap 'rm -rf "$snap"' EXIT
+resume_dir="$(git rev-parse --path-format=absolute --git-path fd-rebase)"
 
 compat_conflicts_only() {
 	local conflicted f
@@ -131,12 +148,10 @@ resolve_compat() {
 	git add -- "${COMPAT_OUTPUTS[@]}"
 }
 
-base="$(git merge-base HEAD "$LATEST")"
-if [ "$base" != "$(git rev-parse "$LATEST^{commit}")" ]; then
-	echo "==> rebasing patches $base..HEAD onto $LATEST"
-	git log --oneline "$base..HEAD"
-	rc=0
-	git -c merge.conflictStyle=zdiff3 rebase --onto "$LATEST" "$base" HEAD || rc=$?
+# Drives the rebase to completion from a step that exited with status $1,
+# recompiling compat-only conflicts; any other conflict is reported and stops.
+finish_rebase() {
+	local rc="$1"
 	while [ "$rc" -ne 0 ] && compat_conflicts_only; do
 		echo "==> recompiling compat rules for $(git log -1 --format='%h %s' REBASE_HEAD)"
 		resolve_compat || break
@@ -149,11 +164,34 @@ if [ "$base" != "$(git rev-parse "$LATEST^{commit}")" ]; then
 			git rebase --abort || true
 			echo "::error::FleetDriver patches do not apply cleanly onto $LATEST; see the job summary"
 		else
-			echo "Rebase stopped for manual resolution. Resolve, then git rebase --continue." >&2
+			rm -rf "$resume_dir"
+			cp -R "$snap" "$resume_dir"
+			echo "Rebase stopped for manual resolution. Resolve, git add the files, then run:" >&2
+			echo "  LATEST=$LATEST bash $resume_dir/fd-rebase.sh" >&2
 		fi
 		exit 1
 	fi
+}
+
+rc=0
+if [ "$resuming" = true ]; then
+	echo "==> resuming the rebase onto $LATEST"
+	if compat_conflicts_only; then
+		rc=1
+	else
+		GIT_EDITOR=true git -c merge.conflictStyle=zdiff3 rebase --continue || rc=$?
+	fi
+	finish_rebase "$rc"
+else
+	base="$(git merge-base HEAD "$LATEST")"
+	if [ "$base" != "$(git rev-parse "$LATEST^{commit}")" ]; then
+		echo "==> rebasing patches $base..HEAD onto $LATEST"
+		git log --oneline "$base..HEAD"
+		git -c merge.conflictStyle=zdiff3 rebase --onto "$LATEST" "$base" HEAD || rc=$?
+		finish_rebase "$rc"
+	fi
 fi
+rm -rf "$resume_dir"
 
 version="$(jq -r .version packages/coding-agent/package.json)"
 if [ "$version" != "${LATEST#v}" ]; then
